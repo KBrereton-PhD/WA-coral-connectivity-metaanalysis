@@ -1,0 +1,20 @@
+region_pair,mean_fst,n_comparisons,genetic_connectivity,genetic_strength_num,n_hydro_studies,hydro_consensus,hydro_strength_num,directions,agreement
+Abrolhos <-> Ningaloo,0.36,1,Low,1,2,low,2,S,Partially concordant
+Ashmore <-> Ningaloo,0.13554,5,Moderate,2,1,low,1,NA,Partially concordant
+Ashmore <-> Rowley Shoals,0.12738,5,Moderate,2,1,low,1,NA,Partially concordant
+Ashmore <-> Scott Reef,0.1713,2,Low,1,2,low,2,NA,Partially concordant
+Dampier Archipelago <-> NW nearshore,0.007,1,High,3,1,mod,2,NA,Partially concordant
+Dampier Archipelago <-> Ningaloo,0.057338,50,Moderate,2,1,low,1,SW,Partially concordant
+Dampier Archipelago <-> Pilbara Offshore,0.026581818181818182,11,High,3,3,mod,3,SW; NA,Concordant
+Dampier Archipelago <-> Pilbara nearshore,0.018,6,High,3,1,high,3,NA,Concordant
+Dampier Archipelago <-> Shark Bay,0.0912,5,Moderate,2,1,low,1,NA,Partially concordant
+NW nearshore <-> Pilbara Offshore,0.005,1,High,3,1,mod,2,NA,Partially concordant
+NW nearshore <-> Shark Bay,0.057,1,Moderate,2,1,low,1,NA,Partially concordant
+Ningaloo <-> Pilbara Offshore,0.018835294117647058,34,High,3,3,high,3,SW; N; NA,Concordant
+Ningaloo <-> Pilbara nearshore,0.034833333333333334,6,High,3,1,mod,2,SW,Partially concordant
+Ningaloo <-> Rowley Shoals,0.05838867924528302,53,Moderate,2,1,low,1,NA,Partially concordant
+Ningaloo <-> Shark Bay,0.12066666666666667,6,Moderate,2,1,high,3,S,Partially concordant
+Pilbara Offshore <-> Rowley Shoals,0.0663,2,Moderate,2,1,low,1,NA,Partially concordant
+Pilbara Offshore <-> Shark Bay,0.10122222222222223,9,Moderate,2,1,low,1,SW,Partially concordant
+Pilbara nearshore <-> Pilbara Offshore,0.0189,10,High,3,1,high,3,bidirectional,Concordant
+Rowley Shoals <-> Scott Reef,0.033986363636363634,44,High,3,1,low,1,NA,Discordant

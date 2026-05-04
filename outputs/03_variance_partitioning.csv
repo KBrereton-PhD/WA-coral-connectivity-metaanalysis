@@ -1,0 +1,7 @@
+Model,Pct_Study,Pct_Taxon,Pct_Species,Pct_Spawn,Pct_Residual,Singular
+1. Study only,44.5,0,0,0,55.5,FALSE
+2. + Taxon,44.5,0,0,0,55.5,TRUE
+3. + Species,44.5,0,0,0,55.5,TRUE
+4. + Spawn mode,44.5,0,0,0,55.5,TRUE
+5. + Taxon + Marker,48.1,0,0,0,51.9,TRUE
+6. Full model,48.1,0,0,0,51.9,TRUE

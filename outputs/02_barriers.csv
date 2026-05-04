@@ -1,0 +1,12 @@
+region_pair,n,mean_fst,mean_resid
+Ashmore <-> Kimberley Nearshore,4,0.717,0.358
+Kimberley Nearshore <-> Rowley Shoals,12,0.719,0.346
+Kimberley Nearshore <-> Ningaloo,12,0.719,0.321
+Pilbara Offshore <-> Southwest coast,1,0.389,0.246
+Shark Bay <-> Southwest coast,1,0.37,0.244
+NW nearshore <-> Southwest coast,1,0.354,0.21
+Exmouth Gulf <-> Pilbara nearshore,1,0.24,0.205
+Pilbara nearshore <-> Southwest coast,2,0.328,0.187
+Dampier Archipelago <-> Southwest coast,1,0.329,0.186
+Exmouth Gulf <-> Southwest coast,1,0.322,0.184
+Ashmore <-> Dampier Archipelago,1,0.367,0.183

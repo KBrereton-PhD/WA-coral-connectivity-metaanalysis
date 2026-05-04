@@ -1,0 +1,35 @@
+{
+  "title": "Genetic and hydrodynamic connectivity in Australian coral reef species: a meta-analysis",
+  "description": "Code and data for a meta-analysis of pairwise FST-based genetic connectivity and Lagrangian hydrodynamic model connectivity across Australian coral reef species. Includes the full R analysis pipeline (FullPipeline.Rmd), all input data, cleaned data, analysis results, and manuscript figures. The analysis spans 20 biogeographic regions of Australia and addresses concordance between hydrodynamic larval dispersal predictions and empirically measured genetic structure. Produced as part of a PhD thesis at the University of Western Australia.",
+  "creators": [
+    {
+      "name": "Brereton, Kira",
+      "affiliation": "University of Western Australia",
+      "orcid": "YOUR-ORCID-HERE"
+    }
+  ],
+  "keywords": [
+    "coral reef",
+    "genetic connectivity",
+    "FST",
+    "hydrodynamic connectivity",
+    "meta-analysis",
+    "isolation by distance",
+    "network analysis",
+    "Australia",
+    "marine population genetics",
+    "open science",
+    "R"
+  ],
+  "license": "cc-by-4.0",
+  "upload_type": "software",
+  "access_right": "open",
+  "language": "eng",
+  "related_identifiers": [
+    {
+      "identifier": "10.5061/dryad.XXXXXXX",
+      "relation": "isSupplementedBy",
+      "resource_type": "dataset"
+    }
+  ]
+}

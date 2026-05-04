@@ -1,0 +1,8 @@
+study,n_sites,mantel_r,p,note,marker,species,n_pairs
+ad21,13,-0.0088,0.454,21 imputed,SNP,Acropora digitifera,57
+du26,14,NA,NA,48% complete,SNP,Acropora tenuis,44
+ev19,18,0.5105,0.002,18 imputed,Microsatellite,Cyphastrea microphthalma,135
+ev21,8,0.8014,0.003,1 imputed,Mixed,Turbinaria reniformis,27
+ro20,10,0.6849,0.001,6 imputed,Microsatellite,Acropora tenuis,39
+ros16,6,0.5009,0.0097,complete,Mixed,Acropora tenuis,15
+un09,26,-0.0933,0.947,72 imputed,Microsatellite,Acropora tenuis,253

@@ -1,0 +1,42 @@
+﻿studyID,region_A,region_B,direction,conn,connect_str
+fe16,Exmouth Gulf,Ningaloo,,n,
+fe16,Pilbara nearshore,Ningaloo,SW,y,mod
+fe16,Pilbara Offshore,Ningaloo,SW,y,high
+fe16,Dampier Archipelago,Pilbara Offshore,SW,y,mod
+fe16,NW nearshore,Ningaloo,,n,
+fe16,Dampier Archipelago,Ningaloo,SW,y,low
+fe16,Pilbara Offshore,Pilbara nearshore,bidirectional,y,high
+fe16,Pilbara nearshore,Pilbara Offshore,bidirectional,y,high
+ma16,Shark Bay,Abrolhos,S,y,low
+ma16,Ningaloo,Abrolhos,S,y,low
+ma16,Pilbara Offshore,Abrolhos,SW,y,low
+ma16,Pilbara nearshore,Abrolhos,SW,y,low
+ma16,Dampier Archipelago,Abrolhos,SW,y,low
+KN15,Ningaloo,Abrolhos,S,y,mod
+KN15,Ningaloo,Shark Bay,S,y,high
+KN15,Ningaloo,Pilbara Offshore,N,y,low
+KN15,Pilbara Offshore,Shark Bay,SW,y,low
+KN15,Pilbara Offshore,Abrolhos,S,y,low
+KN15,Pilbara Offshore,Ningaloo,,y,high
+KN15,Dampier Archipelago,Shark Bay,,y,low
+KN15,Dampier Archipelago,Abrolhos,SW,y,low
+KN15,Dampier Archipelago,Pilbara Offshore,,y,high
+KN15,Dampier Archipelago,Pilbara nearshore,,y,high
+KN15,NW nearshore,Abrolhos,SW,y,low
+KN15,NW nearshore,Shark Bay,,y,low
+KN15,NW nearshore,Ningaloo,,y,low
+KN15,NW nearshore,Pilbara Offshore,,y,mod
+KN15,NW nearshore,Dampier Archipelago,,y,mod
+KN15,Rowley Shoals,Abrolhos,,y,low
+KN15,Rowley Shoals,Ningaloo,,y,low
+KN15,Rowley Shoals,Pilbara Offshore,,y,low
+KN15,Kimberley nearshore,Scott Reef,,y,mod
+KN15,Kimberley nearshore,Rowley Shoals,,y,low
+KN15,Ashmore,Ningaloo,,y,low
+KN15,Ashmore,Scott Reef,,y,mod
+KN15,Ashmore,Rowley Shoals,,y,low
+KN15,Ashmore,Kimberley nearshore,,y,mod
+ca08,Pilbara Offshore,Ningaloo,,y,high
+ca08,Dampier Archipelago,Pilbara Offshore,,y,mod
+ca08,Ashmore,Scott Reef,,y,low
+ca08,Scott Reef,Rowley Shoals,,y,low

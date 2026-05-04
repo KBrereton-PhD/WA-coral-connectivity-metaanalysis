@@ -1,0 +1,2143 @@
+---
+title: "Full Meta-Analysis Pipeline"
+author: "Kira"
+date: "2026-04-06"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    code_folding: show
+    theme: flatly
+---
+
+
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE, message = FALSE, warning = TRUE,
+  fig.width = 10, fig.height = 7, dpi = 150
+)
+```
+
+# Setup and Data Loading {.tabset}
+
+## Load packages
+
+```{r packages}
+# Core
+library(tidyverse)
+library(geosphere)
+
+# Mixed models & meta-analysis
+library(lme4)
+library(lmerTest)
+library(MuMIn)
+library(metafor)
+library(boot)
+
+# Spatial
+library(spdep)
+library(vegan)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+
+# Network
+library(igraph)
+
+# Plotting
+library(ggspatial)
+library(scales)
+library(circlize)
+library(pheatmap)
+library(ggrepel)
+library(cowplot)
+library(scatterpie)
+library(ggalluvial)
+library(treemapify)
+
+# Tables
+library(kableExtra)
+
+# Paths
+library(here)
+
+# Output
+dir.create("outputs", showWarnings = FALSE)
+```
+
+## Load and validate data
+
+```{r load-data}
+# ── FST data ─────────────────────────────────────────────────────────────────
+fst_raw <- read_csv(
+  here("data", "fst.csv"),
+  col_types = cols(
+    Site_A = col_character(), Site_B = col_character(),
+    Fst = col_double(), significant = col_character(),
+    .default = col_skip()
+  )
+)
+
+# ── Genetic site metadata ────────────────────────────────────────────────────
+genetic_meta <- read_csv(
+  here("data", "geneticMeta.csv"),
+  col_types = cols(
+    region = col_character(), studyID = col_character(),
+    lat = col_character(), lon = col_character(),
+    lat_spec = col_double(), lon_spec = col_double(),
+    spawnMode = col_character(), species = col_character(),
+    author = col_character(), year = col_double(),
+    geneMarkers = col_character(), .default = col_character()
+  )
+)
+
+# ── Study metadata (marker type, spawn type) ─────────────────────────────────
+all_studies <- read_csv(here("data", "allStudies.csv"), col_types = cols(.default = col_character()))
+
+# ── Hydrodynamic connectivity ────────────────────────────────────────────────
+hydro_raw <- read_csv(here("data", "hydrodynamic.csv"), col_types = cols(.default = col_character()))
+
+# ── Region centroids (authoritative lat/lon per region) ───────────────────────
+region_centroids <- read_csv(here("data", "regionData.csv"),
+  col_types = cols(region = col_character(), lat = col_double(), lon = col_double())) %>%
+  filter(!is.na(region), !is.na(lat), !is.na(lon))
+
+# ── Basemap ───────────────────────────────────────────────────────────────────
+basemap <- ne_countries(
+  scale = "medium",
+  country = c("Australia", "Indonesia", "East Timor"),
+  returnclass = "sf"
+)
+
+cat("=== DATA LOADED ===\n")
+cat("FST rows:", nrow(fst_raw), "\n")
+cat("Genetic metadata rows:", nrow(genetic_meta), "\n")
+cat("Study metadata rows:", nrow(all_studies), "\n")
+cat("Hydrodynamic rows:", nrow(hydro_raw), "\n")
+```
+
+# Data Cleaning {.tabset}
+
+This chunk performs ALL data cleaning in one place. Every downstream analysis
+uses the objects created here. No further cleaning happens later.
+
+## Clean site metadata
+
+```{r clean-metadata}
+# Study-level spawn type from allStudies (fallback for sites missing it in geneticMeta)
+spawn_lookup <- all_studies %>%
+  filter(studyType == "genetic", valuesAvail == "y") %>%
+  select(study = studyID, spawn_from_study = spawnType) %>%
+  mutate(spawn_from_study = na_if(spawn_from_study, "na"))
+
+# CRITICAL: strip whitespace from ALL region names across ALL datasets
+site_metadata <- genetic_meta %>%
+  filter(!is.na(studyID), studyID != "") %>%
+  mutate(region = str_trim(region)) %>%
+  select(studyID, region, lat, lon, lat_spec, lon_spec,
+         spawnMode, species, author, year, geneMarkers) %>%
+  distinct(studyID, .keep_all = TRUE) %>%
+  mutate(
+    # Coerce lat/lon from character safely
+    lat = suppressWarnings(as.numeric(lat)),
+    lon = suppressWarnings(as.numeric(lon)),
+    # Prefer site-specific coords; fall back to region centroid
+    lat_use = coalesce(lat_spec, lat),
+    lon_use = coalesce(lon_spec, lon),
+    # Extract genus for taxon-level analysis
+    taxon = word(species, 1),
+    # Extract study prefix for joining
+    study = str_extract(studyID, "^[a-z]{2,4}\\d{2}")
+  ) %>%
+  left_join(spawn_lookup, by = "study") %>%
+  mutate(
+    # Use site-level spawnMode where available; fall back to study-level spawnType
+    spawnMode = coalesce(spawnMode, spawn_from_study)
+  ) %>%
+  select(-spawn_from_study)
+
+cat("Unique sites:", nrow(site_metadata), "\n")
+cat("Unique regions:", n_distinct(site_metadata$region), "\n")
+cat("Regions:", paste(sort(unique(site_metadata$region)), collapse = ", "), "\n")
+```
+
+## Build marker type lookup
+
+```{r marker-lookup}
+# Marker type from allStudies.csv
+marker_lookup <- all_studies %>%
+  filter(studyType == "genetic", valuesAvail == "y") %>%
+  select(study = studyID, geneticMarker = markerType) %>%
+  filter(!is.na(study), !is.na(geneticMarker), study != "", geneticMarker != "na") %>%
+  mutate(
+    marker_category = case_when(
+      str_detect(geneticMarker, regex("SNP", ignore_case = TRUE)) &
+        str_detect(geneticMarker, regex("mtDNA|microsatellite|RNA", ignore_case = TRUE)) ~ "Mixed",
+      str_detect(geneticMarker, regex("microsatellite", ignore_case = TRUE)) &
+        str_detect(geneticMarker, regex("mtDNA", ignore_case = TRUE)) ~ "Mixed",
+      str_detect(geneticMarker, regex("SNP", ignore_case = TRUE)) ~ "SNP",
+      str_detect(geneticMarker, regex("microsatellite", ignore_case = TRUE)) ~ "Microsatellite",
+      str_detect(geneticMarker, regex("allozyme", ignore_case = TRUE)) ~ "Allozyme",
+      str_detect(geneticMarker, regex("mtDNA", ignore_case = TRUE)) ~ "mtDNA",
+      str_detect(geneticMarker, regex("NGS", ignore_case = TRUE)) ~ "SNP",
+      TRUE ~ "Other"
+    ),
+    # Marker resolution classification for manuscript
+    marker_resolution = case_when(
+      marker_category %in% c("SNP", "Mixed") ~ "High",
+      marker_category == "Microsatellite" ~ "Medium",
+      marker_category %in% c("Allozyme", "mtDNA") ~ "Low",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  select(study, geneticMarker, marker_category, marker_resolution) %>%
+  distinct(study, .keep_all = TRUE)
+
+cat("Marker lookup entries:", nrow(marker_lookup), "\n")
+print(marker_lookup %>% select(study, marker_category, marker_resolution))
+```
+
+## Clean FST data and join metadata
+
+```{r clean-fst}
+# Check for unmatched sites
+sites_in_fst <- unique(c(fst_raw$Site_A, fst_raw$Site_B))
+sites_in_meta <- site_metadata$studyID
+unmatched <- setdiff(sites_in_fst, sites_in_meta)
+cat("Unmatched sites (in FST but not metadata):", length(unmatched), "\n")
+if (length(unmatched) > 0) cat("  ", paste(unmatched, collapse = ", "), "\n")
+
+# Clean: remove NAs, unmatched sites, clamp negative Fst to 0
+fst_clean <- fst_raw %>%
+  filter(!is.na(Fst), !is.na(significant)) %>%
+  filter(!Site_A %in% unmatched, !Site_B %in% unmatched) %>%
+  mutate(Fst = pmax(Fst, 0))  # Clamp negatives to 0
+
+cat("FST values after cleaning:", nrow(fst_clean), "\n")
+
+# Join metadata for both sites
+fst_full <- fst_clean %>%
+  left_join(site_metadata, by = c("Site_A" = "studyID"), suffix = c("", "_A")) %>%
+  rename(Region_A = region, Lat_A = lat_use, Lon_A = lon_use,
+         Spawn_A = spawnMode, Species_A = species, Taxon_A = taxon,
+         Author_A = author, Year_A = year, Study_A = study) %>%
+  select(-lat, -lon, -lat_spec, -lon_spec, -geneMarkers) %>%
+  left_join(site_metadata, by = c("Site_B" = "studyID"), suffix = c("", "_B")) %>%
+  rename(Region_B = region, Lat_B = lat_use, Lon_B = lon_use,
+         Spawn_B = spawnMode, Species_B = species, Taxon_B = taxon,
+         Author_B = author, Year_B = year, Study_B = study) %>%
+  select(-lat, -lon, -lat_spec, -lon_spec, -geneMarkers) %>%
+  filter(!is.na(Region_A), !is.na(Region_B)) %>%
+  mutate(
+    study = Study_A,  # Both sites share same study prefix
+    same_region = Region_A == Region_B,
+    region_pair = paste(pmin(Region_A, Region_B), pmax(Region_A, Region_B), sep = " <-> ")
+  )
+
+# Restrict to studies with valuesAvail == "y" in allStudies
+valid_studies <- all_studies %>%
+  filter(valuesAvail == "y") %>%
+  pull(studyID)
+
+fst_full <- fst_full %>% filter(study %in% valid_studies)
+
+# Join marker type
+fst_full <- fst_full %>%
+  left_join(marker_lookup %>% select(study, marker_category, marker_resolution),
+            by = "study")
+
+cat("FST values with valid regions:", nrow(fst_full), "\n")
+cat("Studies:", paste(sort(unique(fst_full$study)), collapse = ", "), "\n")
+cat("Marker categories:\n")
+fst_full %>% count(marker_category, sort = TRUE) %>% print()
+```
+
+## Split between- and within-region
+
+```{r split-data}
+fst_between <- fst_full %>% filter(!same_region)
+fst_within  <- fst_full %>% filter(same_region)
+
+cat("Between-region comparisons:", nrow(fst_between), "\n")
+cat("Within-region comparisons:", nrow(fst_within), "\n")
+cat("Unique between-region pairs:", n_distinct(fst_between$region_pair), "\n")
+cat("Unique regions in between-region data:",
+    n_distinct(c(fst_between$Region_A, fst_between$Region_B)), "\n")
+```
+
+## Calculate geographic distances
+
+```{r geo-distances}
+# Between-region data with valid coordinates
+fst_between <- fst_between %>%
+  filter(!is.na(Lat_A), !is.na(Lon_A), !is.na(Lat_B), !is.na(Lon_B)) %>%
+  rowwise() %>%
+  mutate(geo_dist_km = distHaversine(c(Lon_A, Lat_A), c(Lon_B, Lat_B)) / 1000) %>%
+  ungroup() %>%
+  filter(geo_dist_km > 0)
+
+cat("Between-region with valid distances:", nrow(fst_between), "\n")
+cat("Distance range:", round(min(fst_between$geo_dist_km)), "–",
+    round(max(fst_between$geo_dist_km)), "km\n")
+```
+
+## Aggregate to region-pair level
+
+```{r region-aggregate}
+region_connectivity <- fst_between %>%
+  group_by(region_pair) %>%
+  summarise(
+    n_comparisons = n(),
+    n_studies = n_distinct(study),
+    mean_fst = mean(Fst, na.rm = TRUE),
+    sd_fst = sd(Fst, na.rm = TRUE),
+    min_fst = min(Fst, na.rm = TRUE),
+    max_fst = max(Fst, na.rm = TRUE),
+    n_significant = sum(significant == "y"),
+    studies_list = paste(sort(unique(study)), collapse = "; "),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    # Extract Region_A and Region_B from the already-sorted region_pair key
+    # (avoids dplyr sequential-evaluation bug when computing both inside summarise)
+    Region_A = str_split_fixed(region_pair, " <-> ", 2)[, 1],
+    Region_B = str_split_fixed(region_pair, " <-> ", 2)[, 2],
+    connectivity = case_when(
+      mean_fst < 0.05 ~ "High",
+      mean_fst < 0.15 ~ "Moderate",
+      TRUE ~ "Low"
+    ),
+    connectivity = factor(connectivity, levels = c("Low", "Moderate", "High"))
+  )
+
+cat("=== REGION-PAIR CONNECTIVITY SUMMARY ===\n")
+cat("Total region pairs:", nrow(region_connectivity), "\n\n")
+region_connectivity %>% count(connectivity) %>% print()
+cat("\nPercentages:\n")
+region_connectivity %>%
+  count(connectivity) %>%
+  mutate(pct = round(100 * n / sum(n), 1)) %>%
+  print()
+```
+
+## Clean hydrodynamic data
+
+```{r clean-hydro}
+valid_hydro_studies <- all_studies %>%
+  filter(studyType == "dispersal", valuesAvail == "y") %>%
+  pull(studyID)
+
+hydro_conn <- hydro_raw %>%
+  filter(conn == "y", studyID %in% valid_hydro_studies) %>%
+  mutate(
+    region_A = str_trim(region_A),
+    region_B = str_trim(region_B),
+    region_pair = paste(pmin(region_A, region_B), pmax(region_A, region_B), sep = " <-> "),
+    connect_str = str_trim(connect_str),
+    direction = str_trim(direction),
+    strength_num = case_when(
+      connect_str == "high" ~ 3L,
+      connect_str == "mod"  ~ 2L,
+      connect_str == "low"  ~ 1L,
+      TRUE ~ NA_integer_
+    )
+  ) %>%
+  select(studyID, region_A, region_B, region_pair, direction, connect_str, strength_num)
+
+cat("Hydrodynamic connections:", nrow(hydro_conn), "\n")
+cat("Strength breakdown:\n")
+hydro_conn %>% count(connect_str) %>% print()
+cat("\nDirection breakdown:\n")
+hydro_conn %>% count(direction) %>% print()
+
+# Aggregate to unique region pairs (max strength = consensus)
+hydro_summary <- hydro_conn %>%
+  group_by(region_pair) %>%
+  summarise(
+    n_hydro_studies = n_distinct(studyID),
+    hydro_consensus = names(which.max(table(connect_str))),
+    hydro_strength_num = max(strength_num, na.rm = TRUE),
+    directions = paste(unique(direction), collapse = "; "),
+    .groups = "drop"
+  )
+
+cat("\nUnique hydro region pairs:", nrow(hydro_summary), "\n")
+cat("Hydro regions covered:",
+    n_distinct(c(hydro_conn$region_A, hydro_conn$region_B)), "\n")
+```
+
+## Save cleaned data checkpoint
+
+```{r save-checkpoint}
+write_csv(fst_between, "outputs/01_fst_between_clean.csv")
+write_csv(fst_within, "outputs/01_fst_within_clean.csv")
+write_csv(region_connectivity, "outputs/01_region_connectivity.csv")
+write_csv(hydro_summary, "outputs/01_hydro_summary.csv")
+
+cat("=== DATA CLEANING COMPLETE ===\n")
+cat("All downstream analyses use fst_between (n =", nrow(fst_between), ")\n")
+cat("Region pairs:", nrow(region_connectivity), "\n")
+```
+
+# Literature Review {.tabset}
+
+## Summary
+
+```{r litrev-clean}
+all_studies <- all_studies %>%
+  mutate(
+    publishedYear = as.integer(publishedYear),
+    numSites      = suppressWarnings(as.integer(numSites)),
+    sampleSize    = suppressWarnings(as.integer(str_extract(sampleSize, "^[0-9]+"))),
+    studyType     = str_trim(studyType),
+    valuesAvail   = str_trim(valuesAvail),
+    spawnType     = str_trim(spawnType),
+    location      = str_replace_all(location, regex("Houtman Abrolhos", ignore_case = TRUE), "Abrolhos")
+  ) %>%
+  mutate(
+    marker_category = case_when(
+      studyType != "genetic"                                                        ~ NA_character_,
+      str_detect(markerType, regex("SNP|NGS", ignore_case = TRUE)) &
+        str_detect(markerType, regex("microsatellite|mtDNA", ignore_case = TRUE))  ~ "Mixed",
+      str_detect(markerType, regex("microsatellite", ignore_case = TRUE)) &
+        str_detect(markerType, regex("mtDNA", ignore_case = TRUE))                 ~ "Mixed",
+      str_detect(markerType, regex("SNP|NGS",            ignore_case = TRUE))      ~ "SNP",
+      str_detect(markerType, regex("microsatellite",     ignore_case = TRUE))      ~ "Microsatellite",
+      str_detect(markerType, regex("allozyme",           ignore_case = TRUE))      ~ "Allozyme",
+      str_detect(markerType, regex("mtDNA",              ignore_case = TRUE))      ~ "mtDNA",
+      TRUE                                                                          ~ "Other"
+    )
+  )
+
+litrev_genetic   <- all_studies %>% filter(studyType == "genetic")
+litrev_dispersal <- all_studies %>% filter(studyType == "dispersal")
+
+year_min <- min(all_studies$publishedYear, na.rm = TRUE)
+year_max <- max(all_studies$publishedYear, na.rm = TRUE)
+
+cat("=== LITERATURE REVIEW SUMMARY ===\n")
+cat("Total studies:", nrow(all_studies), "\n")
+cat("  Genetic:", nrow(litrev_genetic), "\n")
+cat("  Dispersal:", nrow(litrev_dispersal), "\n")
+cat("Included (valuesAvail == y):", sum(all_studies$valuesAvail == "y"), "\n")
+cat("Excluded (valuesAvail == n):", sum(all_studies$valuesAvail == "n"), "\n\n")
+cat("Exclusion reasons:\n")
+all_studies %>% filter(valuesAvail == "n") %>% count(studyType, excluReas) %>% print()
+cat("\nPublication year range:",
+    min(all_studies$publishedYear, na.rm = TRUE), "–",
+    max(all_studies$publishedYear, na.rm = TRUE), "\n")
+cat("Genetic — n sites (median):", median(litrev_genetic$numSites, na.rm = TRUE), "\n")
+cat("Genetic — sample size range:",
+    min(litrev_genetic$sampleSize, na.rm = TRUE), "–",
+    max(litrev_genetic$sampleSize, na.rm = TRUE), "\n")
+```
+
+## Figure A — Publication timeline
+
+```{r litrev-figA, fig.width=7, fig.height=3.5}
+bw_type_cols <- c("genetic" = "black", "dispersal" = "grey45")
+
+# Use only years that have at least one study — removes the 1986–2002 gap naturally
+timeline_data <- all_studies %>%
+  filter(!is.na(publishedYear)) %>%
+  mutate(
+    studyType = factor(studyType, levels = c("genetic", "dispersal")),
+    yr_fct    = factor(publishedYear)
+  ) %>%
+  count(yr_fct, studyType) %>%
+  complete(yr_fct, studyType, fill = list(n = 0L))
+
+p_A <- ggplot(timeline_data, aes(x = yr_fct, y = n, fill = studyType)) +
+  geom_col(position = "stack", width = 0.8, colour = NA) +
+  scale_fill_manual(values = bw_type_cols,
+                    name   = "Study type",
+                    labels = c("Genetic", "Dispersal model")) +
+  scale_y_continuous(breaks = scales::breaks_pretty(),
+                     expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "Publication year", y = "Number of studies") +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid       = element_blank(),
+    axis.title       = element_text(size = 11, face = "bold"),
+    axis.text.x      = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y      = element_text(size = 10),
+    legend.title     = element_text(size = 9, face = "bold"),
+    legend.text      = element_text(size = 8),
+    legend.position  = "right"
+  )
+
+print(p_A)
+ggsave("outputs/Figure_litrev_A_timeline.pdf", p_A,
+       width = 130, height = 80, units = "mm", dpi = 600, bg = "white")
+```
+
+## Figure B — Geographic coverage
+
+```{r litrev-figB, fig.width=9, fig.height=5}
+# One row per study × region
+litrev_region_studies <- all_studies %>%
+  select(studyID, studyType, location) %>%
+  separate_rows(location, sep = ";\\s*") %>%
+  mutate(location = str_trim(location)) %>%
+  filter(!is.na(location), location != "", str_to_lower(location) != "na") %>%
+  inner_join(
+    region_centroids %>% mutate(location = region),
+    by = "location"
+  ) %>%
+  select(studyID, studyType, region, lat, lon)
+
+# Wide format; radius ∝ sqrt(total) so area scales with study count
+litrev_pie_data <- litrev_region_studies %>%
+  count(region, studyType, lat, lon) %>%
+  pivot_wider(names_from = studyType, values_from = n, values_fill = 0) %>%
+  mutate(
+    total  = rowSums(across(any_of(c("genetic", "dispersal")))),
+    radius = 0.4 + 1.1 * sqrt(total / max(total))
+  )
+
+pie_cols_present <- intersect(c("genetic", "dispersal"), names(litrev_pie_data))
+
+cat("=== GEOGRAPHIC COVERAGE ===\n")
+print(litrev_pie_data %>% select(region, any_of(c("genetic","dispersal")), total, radius) %>%
+        arrange(desc(total)))
+
+# Arrange regions in a grid, ordered north → south by latitude
+ncols_pie  <- 5
+max_r      <- max(litrev_pie_data$radius)
+spacing    <- max_r * 2.8   # guarantee no overlap
+
+litrev_pie_grid <- litrev_pie_data %>%
+  arrange(desc(lat)) %>%
+  mutate(
+    idx   = row_number() - 1L,
+    x_pos = (idx %% ncols_pie) * spacing,
+    y_pos = -(idx %/% ncols_pie) * spacing
+  )
+
+p_B <- ggplot() +
+  geom_scatterpie(
+    data      = litrev_pie_grid,
+    aes(x = x_pos, y = y_pos, group = region, r = radius),
+    cols      = pie_cols_present,
+    colour    = "grey15",
+    linewidth = 0.35
+  ) +
+  geom_text(
+    data = litrev_pie_grid,
+    aes(x = x_pos, y = y_pos - radius - 0.18, label = region),
+    size  = 2.6, hjust = 0.5, vjust = 1, lineheight = 0.85
+  ) +
+  scale_fill_manual(
+    values = c("genetic" = "black", "dispersal" = "grey45"),
+    name   = "Study type",
+    labels = c("Genetic", "Dispersal model")
+  ) +
+  coord_equal() +
+  theme_void(base_size = 11) +
+  theme(
+    legend.title    = element_text(size = 9, face = "bold"),
+    legend.text     = element_text(size = 8),
+    legend.position = "right"
+  )
+
+print(p_B)
+ggsave("outputs/Figure_litrev_B_geo.pdf", p_B,
+       width = 220, height = 130, units = "mm", dpi = 600, bg = "white")
+```
+
+## Figure C — Taxonomic distribution
+
+```{r litrev-figC, fig.width=5, fig.height=3.5}
+litrev_taxa_data <- litrev_genetic %>%
+  filter(!is.na(taxa), str_to_lower(taxa) != "na") %>%
+  separate_rows(taxa, sep = ";\\s*") %>%
+  mutate(taxa = str_trim(taxa)) %>%
+  filter(taxa != "") %>%
+  count(taxa) %>%
+  mutate(taxa = fct_reorder(taxa, n))
+
+p_C <- ggplot(litrev_taxa_data, aes(x = n, y = taxa)) +
+  geom_col(fill = "grey30", colour = "grey20", linewidth = 0.3, width = 0.65) +
+  geom_text(aes(label = n), hjust = -0.25, size = 3.2) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(x = "Number of genetic studies", y = "Taxon") +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid   = element_blank(),
+    axis.title   = element_text(size = 11, face = "bold"),
+    axis.text    = element_text(size = 10)
+  )
+
+print(p_C)
+ggsave("outputs/Figure_litrev_C_taxa.pdf", p_C,
+       width = 110, height = 80, units = "mm", dpi = 600, bg = "white")
+```
+
+## Figure D — Markers over time
+
+```{r litrev-figD, fig.width=7, fig.height=3.5}
+marker_grey <- c(
+  "SNP"            = "black",
+  "Mixed"          = "grey28",
+  "Microsatellite" = "grey48",
+  "mtDNA"          = "grey62",
+  "Allozyme"       = "grey72"
+)
+
+d_breaks <- seq(1984, 2029, by = 5)
+d_labels <- paste0(head(d_breaks, -1), "–", tail(d_breaks, -1) - 1)
+d_labels[length(d_labels)] <- "2024–2026"   # cap final bin at actual data end
+
+figD_data <- litrev_genetic %>%
+  filter(!is.na(marker_category), marker_category != "Other",
+         !is.na(publishedYear)) %>%
+  mutate(
+    year_bin        = cut(publishedYear, breaks = d_breaks, right = FALSE,
+                          labels = d_labels, include.lowest = TRUE),
+    marker_category = factor(marker_category,
+                             levels = c("SNP", "Mixed", "Microsatellite", "mtDNA", "Allozyme"))
+  )
+
+p_D <- ggplot(figD_data, aes(x = year_bin, fill = marker_category)) +
+  geom_bar(position = "stack", width = 0.72, colour = NA) +
+  scale_fill_manual(values = marker_grey, name = "Marker type") +
+  scale_y_continuous(breaks = scales::breaks_width(1),
+                     expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "Publication year", y = "Number of genetic studies") +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid     = element_blank(),
+    axis.title     = element_text(size = 11, face = "bold"),
+    axis.text.x    = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y    = element_text(size = 10),
+    legend.title   = element_text(size = 9, face = "bold"),
+    legend.text    = element_text(size = 8),
+    legend.position = "right"
+  )
+
+print(p_D)
+ggsave("outputs/Figure_litrev_D_markers.pdf", p_D,
+       width = 130, height = 80, units = "mm", dpi = 600, bg = "white")
+```
+
+## Figure E — Taxa by study type (three alternatives)
+
+```{r litrev-figE-data}
+# Shared data prep for all three alternatives
+litrev_taxa_studytype <- all_studies %>%
+  filter(!is.na(taxa), str_to_lower(str_trim(taxa)) != "na") %>%
+  separate_rows(taxa, sep = ";\\s*") %>%
+  mutate(taxa = str_trim(taxa)) %>%
+  filter(taxa != "") %>%
+  count(taxa, studyType) %>%
+  mutate(
+    taxa      = fct_reorder(taxa, n, .fun = sum),
+    studyType = factor(studyType, levels = c("genetic", "dispersal"))
+  )
+
+study_grey <- c("genetic" = "grey20", "dispersal" = "grey70")
+study_labels <- c("genetic" = "Genetic", "dispersal" = "Dispersal model")
+base_theme <- theme_bw(base_size = 11) +
+  theme(
+    panel.grid   = element_blank(),
+    axis.title   = element_text(size = 11, face = "bold"),
+    axis.text    = element_text(size = 10),
+    legend.title = element_text(size = 9, face = "bold"),
+    legend.text  = element_text(size = 8),
+    legend.position = "right"
+  )
+```
+
+### E1 — Diverging bar
+
+```{r litrev-figE1, fig.width=5, fig.height=4}
+p_E1 <- ggplot(litrev_taxa_studytype,
+               aes(x = taxa, y = n, fill = studyType)) +
+  geom_col(position = "stack", width = 0.8, colour = NA) +
+  scale_fill_manual(values = bw_type_cols, name = "Study type",
+                    labels = study_labels) +
+  scale_y_continuous(breaks = scales::breaks_width(2),
+                     expand = expansion(mult = c(0, 0.05))) +
+  labs(x = "Taxon", y = "No. of studies") +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid       = element_blank(),
+    panel.border     = element_blank(),
+    axis.line        = element_line(colour = "black", linewidth = 0.4),
+    axis.title       = element_text(size = 11, face = "bold"),
+    axis.text.x      = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y      = element_text(size = 10),
+    legend.title     = element_text(size = 9, face = "bold"),
+    legend.text      = element_text(size = 8),
+    legend.position  = "right"
+  )
+
+print(p_E1)
+ggsave("outputs/Figure_litrev_E1_diverging.pdf", p_E1,
+       width = 130, height = 80, units = "mm", dpi = 600, bg = "white")
+```
+
+### Combined figure — A + E1 + D
+
+```{r litrev-figCombined, fig.width=15, fig.height=3.5}
+# Shared open-axis theme applied consistently to all three panels
+theme_open <- theme_bw(base_size = 11) +
+  theme(
+    panel.grid      = element_blank(),
+    panel.border    = element_blank(),
+    axis.line       = element_line(colour = "black", linewidth = 0.4),
+    axis.title      = element_text(size = 11, face = "bold"),
+    axis.text.x     = element_text(size = 9, angle = 45, hjust = 1),
+    axis.text.y     = element_text(size = 10),
+    legend.title    = element_text(size = 9, face = "bold"),
+    legend.text     = element_text(size = 8),
+    legend.position = "right"
+  )
+
+p_comb_A <- p_A  + theme_open
+p_comb_B <- p_E1 + theme_open
+p_comb_C <- p_D  + theme_open
+
+# align_plots() equalises the actual panel dimensions so all axis lines align
+aligned <- align_plots(p_comb_A, p_comb_B, p_comb_C, align = "hv", axis = "tblr")
+
+p_combined <- plot_grid(
+  plotlist       = aligned,
+  nrow           = 2,
+  labels         = c("a", "b", "c"),
+  label_size     = 11,
+  label_fontface = "bold"
+)
+
+print(p_combined)
+ggsave("outputs/Figure_litrev_combined.pdf", p_combined,
+       width = 260, height = 160, units = "mm", dpi = 600, bg = "white")
+```
+
+### E2 — Unit dot chart
+
+```{r litrev-figE2, fig.width=6, fig.height=4}
+litrev_units <- litrev_taxa_studytype %>%
+  uncount(n) %>%
+  arrange(taxa, studyType) %>%
+  group_by(taxa) %>%
+  mutate(dot_x = row_number()) %>%
+  ungroup()
+
+p_E2 <- ggplot(litrev_units, aes(x = dot_x, y = taxa, colour = studyType)) +
+  geom_point(size = 4, alpha = 0.85) +
+  scale_colour_manual(values = study_grey, name = "Study type", labels = study_labels) +
+  scale_x_continuous(breaks = scales::breaks_pretty(), name = "Number of studies") +
+  labs(y = "Taxon") +
+  base_theme +
+  theme(panel.grid.major.x = element_line(colour = "grey90", linewidth = 0.3))
+
+print(p_E2)
+ggsave("outputs/Figure_litrev_E2_units.pdf", p_E2,
+       width = 140, height = 100, units = "mm", dpi = 600, bg = "white")
+```
+
+### E3 — Treemap
+
+```{r litrev-figE3, fig.width=6, fig.height=4.5}
+library(treemapify)
+litrev_treemap <- litrev_taxa_studytype %>%
+  mutate(label = paste0(taxa, "\n(", n, ")"))
+
+p_E3 <- ggplot(litrev_treemap,
+               aes(area = n, fill = studyType, label = label, subgroup = taxa)) +
+  geom_treemap(colour = "white", linewidth = 0.8) +
+  geom_treemap_subgroup_border(colour = "grey20", linewidth = 1.5) +
+  geom_treemap_text(colour = "white", place = "centre", size = 9,
+                    fontface = "italic", reflow = TRUE) +
+  scale_fill_manual(values = study_grey, name = "Study type", labels = study_labels) +
+  base_theme +
+  theme(legend.position = "right")
+
+print(p_E3)
+ggsave("outputs/Figure_litrev_E3_treemap.pdf", p_E3,
+       width = 150, height = 110, units = "mm", dpi = 600, bg = "white")
+```
+
+## Study table
+
+```{r litrev-table}
+gen_table <- litrev_genetic %>%
+  arrange(publishedYear) %>%
+  transmute(
+    `Study`    = studyID,
+    `Year`     = publishedYear,
+    `Species`  = species,
+    `Marker`   = markerType,
+    `Regions`  = location,
+    `Sites`    = numSites,
+    `n`        = sampleSize,
+    `Included` = if_else(valuesAvail == "y", "Yes", "No")
+  )
+
+kbl(gen_table, caption = "Genetic connectivity studies reviewed.") %>%
+  kable_classic(full_width = FALSE, html_font = "Arial", font_size = 10) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(which(gen_table$Included == "No"), color = "grey55")
+
+disp_table <- litrev_dispersal %>%
+  arrange(publishedYear) %>%
+  transmute(
+    `Study`      = studyID,
+    `Year`       = publishedYear,
+    `Model`      = modelType,
+    `Resolution` = modelRes,
+    `Season`     = seasonModel,
+    `Regions`    = location,
+    `Included`   = if_else(valuesAvail == "y", "Yes", "No")
+  )
+
+kbl(disp_table, caption = "Dispersal modelling studies reviewed.") %>%
+  kable_classic(full_width = FALSE, html_font = "Arial", font_size = 10) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(which(disp_table$Included == "No"), color = "grey55")
+```
+
+# Isolation-by-Distance Analysis
+
+## Simple linear model
+
+```{r ibd-simple}
+ibd_lm <- lm(Fst ~ log10(geo_dist_km), data = fst_between)
+lm_summ <- summary(ibd_lm)
+
+cat("=== SIMPLE LINEAR MODEL ===\n")
+cat("Slope:", round(coef(ibd_lm)[2], 4), "\n")
+cat("R² =", round(lm_summ$r.squared, 4), "\n")
+cat("F-statistic:", round(lm_summ$fstatistic[1], 2), "\n")
+cat("p-value:", format(lm_summ$coefficients[2, 4], digits = 3), "\n")
+```
+
+## Mixed-effects model (study random intercept)
+
+```{r ibd-mixed}
+ibd_mixed <- lmer(Fst ~ log10(geo_dist_km) + (1 | study), data = fst_between)
+
+cat("=== MIXED-EFFECTS MODEL: Fst ~ log10(distance) + (1|study) ===\n")
+print(summary(ibd_mixed))
+
+# R-squared
+r2_mixed <- r.squaredGLMM(ibd_mixed)
+cat("\nR² marginal (fixed):", round(r2_mixed[1, "R2m"], 4), "\n")
+cat("R² conditional (fixed + random):", round(r2_mixed[1, "R2c"], 4), "\n")
+
+# Variance components and ICC
+vc <- as.data.frame(VarCorr(ibd_mixed))
+var_study <- vc$vcov[vc$grp == "study"]
+var_resid <- vc$vcov[vc$grp == "Residual"]
+icc <- var_study / (var_study + var_resid)
+cat("ICC (study):", round(icc, 3), "\n")
+cat("Study variance:", round(var_study, 6), "\n")
+cat("Residual variance:", round(var_resid, 6), "\n")
+```
+
+## Bootstrap confidence intervals
+
+```{r ibd-bootstrap}
+set.seed(42)
+n_boot <- 1000
+
+boot_slope <- boot(
+  data = fst_between,
+  statistic = function(d, i) coef(lm(Fst ~ log10(geo_dist_km), data = d[i, ]))[2],
+  R = n_boot
+)
+boot_r2 <- boot(
+  data = fst_between,
+  statistic = function(d, i) summary(lm(Fst ~ log10(geo_dist_km), data = d[i, ]))$r.squared,
+  R = n_boot
+)
+
+ci_slope <- boot.ci(boot_slope, type = "bca", conf = 0.95)
+ci_r2    <- boot.ci(boot_r2,    type = "bca", conf = 0.95)
+
+cat("=== BOOTSTRAP RESULTS (1000 nonparametric case resamples, BCa CIs) ===\n")
+cat("IBD slope:", round(boot_slope$t0, 4),
+    "[95% CI:", round(ci_slope$bca[4], 4), "–", round(ci_slope$bca[5], 4), "]\n")
+cat("IBD R²:", round(boot_r2$t0, 4),
+    "[95% CI:", round(ci_r2$bca[4], 4), "–", round(ci_r2$bca[5], 4), "]\n")
+```
+
+## Spatial autocorrelation (Moran's I)
+
+```{r morans-i}
+ibd_spatial <- fst_between %>%
+  mutate(
+    predicted = predict(ibd_mixed),
+    residual = Fst - predicted,
+    mid_lon = (Lon_A + Lon_B) / 2,
+    mid_lat = (Lat_A + Lat_B) / 2
+  )
+
+coords_mat <- as.matrix(ibd_spatial[, c("mid_lon", "mid_lat")])
+knn5 <- knearneigh(coords_mat, k = 5)
+nb5 <- knn2nb(knn5)
+listw5 <- nb2listw(nb5, style = "W")
+moran5 <- moran.test(ibd_spatial$residual, listw5)
+
+cat("=== MORAN'S I (k = 5 nearest neighbours) ===\n")
+cat("Moran's I:", round(moran5$estimate[1], 4), "\n")
+cat("Expected:", round(moran5$estimate[2], 4), "\n")
+cat("p-value:", format(moran5$p.value, digits = 4), "\n")
+cat("Interpretation:", ifelse(moran5$p.value < 0.05,
+    "Significant spatial autocorrelation in residuals", "No spatial autocorrelation"), "\n")
+
+# Sensitivity: k = 3 and k = 7
+for (k in c(3, 7)) {
+  knn_k <- knearneigh(coords_mat, k = k)
+  nb_k <- knn2nb(knn_k)
+  listw_k <- nb2listw(nb_k, style = "W")
+  moran_k <- moran.test(ibd_spatial$residual, listw_k)
+  cat(sprintf("  k=%d: I=%.4f, p=%s\n", k, moran_k$estimate[1], format(moran_k$p.value, digits = 3)))
+}
+```
+
+## Mantel test (alternative IBD test)
+
+```{r mantel-test}
+# Build site-level matrices
+sites_df <- bind_rows(
+  fst_between %>% select(site = Site_A, lat = Lat_A, lon = Lon_A),
+  fst_between %>% select(site = Site_B, lat = Lat_B, lon = Lon_B)
+) %>%
+  distinct(site, .keep_all = TRUE) %>%
+  filter(!is.na(lat), !is.na(lon))
+
+site_coords <- as.matrix(sites_df[, c("lon", "lat")])
+rownames(site_coords) <- sites_df$site
+
+geo_dist_mat <- distm(site_coords, fun = distHaversine) / 1000
+rownames(geo_dist_mat) <- colnames(geo_dist_mat) <- sites_df$site
+
+fst_mat <- matrix(NA, nrow = nrow(sites_df), ncol = nrow(sites_df),
+                  dimnames = list(sites_df$site, sites_df$site))
+for (i in seq_len(nrow(fst_between))) {
+  sa <- fst_between$Site_A[i]; sb <- fst_between$Site_B[i]
+  if (sa %in% rownames(fst_mat) & sb %in% colnames(fst_mat)) {
+    fst_mat[sa, sb] <- fst_between$Fst[i]
+    fst_mat[sb, sa] <- fst_between$Fst[i]
+  }
+}
+diag(fst_mat) <- 0
+
+# Keep sites with >1 comparison
+good_sites <- rownames(fst_mat)[rowSums(!is.na(fst_mat)) > 1]
+fst_sub <- fst_mat[good_sites, good_sites]
+geo_sub <- geo_dist_mat[good_sites, good_sites]
+
+# Impute missing with mean (standard for incomplete matrices)
+fst_sub_complete <- fst_sub
+fst_sub_complete[is.na(fst_sub_complete)] <- mean(fst_sub, na.rm = TRUE)
+
+set.seed(42)
+mantel_raw <- mantel(as.dist(fst_sub_complete), as.dist(geo_sub),
+                     method = "spearman", permutations = 9999)
+mantel_log <- mantel(as.dist(fst_sub_complete), as.dist(log10(geo_sub + 1)),
+                     method = "spearman", permutations = 9999)
+
+cat("=== MANTEL TESTS (9999 permutations, Spearman) ===\n")
+cat("Raw distance:  r =", round(mantel_raw$statistic, 4), " p =", mantel_raw$signif, "\n")
+cat("Log distance:  r =", round(mantel_log$statistic, 4), " p =", mantel_log$signif, "\n")
+```
+
+## Identify barriers and corridors
+
+```{r barriers-corridors}
+ibd_spatial <- ibd_spatial %>%
+  mutate(
+    sd_resid = sd(residual),
+    deviation_type = case_when(
+      residual >  2.0 * sd_resid ~ "Strong barrier",
+      residual >  1.5 * sd_resid ~ "Moderate barrier",
+      residual < -2.0 * sd_resid ~ "Strong corridor",
+      residual < -1.5 * sd_resid ~ "Moderate corridor",
+      TRUE ~ "Expected (IBD)"
+    )
+  )
+
+cat("=== DEVIATION SUMMARY ===\n")
+ibd_spatial %>% count(deviation_type) %>% print()
+
+# Aggregate barriers/corridors by region pair
+barriers <- ibd_spatial %>%
+  filter(str_detect(deviation_type, "barrier")) %>%
+  group_by(region_pair) %>%
+  summarise(n = n(), mean_fst = round(mean(Fst), 3),
+            mean_resid = round(mean(residual), 3), .groups = "drop") %>%
+  arrange(desc(mean_resid))
+
+corridors <- ibd_spatial %>%
+  filter(str_detect(deviation_type, "corridor")) %>%
+  group_by(region_pair) %>%
+  summarise(n = n(), mean_fst = round(mean(Fst), 3),
+            mean_resid = round(mean(residual), 3), .groups = "drop") %>%
+  arrange(mean_resid)
+
+cat("\n=== BARRIERS (more isolated than expected from distance) ===\n")
+print(barriers)
+cat("\n=== CORRIDORS (more connected than expected from distance) ===\n")
+print(corridors)
+
+write_csv(barriers, "outputs/02_barriers.csv")
+write_csv(corridors, "outputs/02_corridors.csv")
+```
+
+# Moderator Analysis and Variance Partitioning
+
+## Marker type as moderator
+
+```{r moderator-marker}
+# Filter to comparisons with known marker type
+ibd_markers <- fst_between %>% filter(!is.na(marker_category), marker_category != "Other")
+cat("Comparisons with known marker:", nrow(ibd_markers), "\n")
+ibd_markers %>% count(marker_category, sort = TRUE) %>% print()
+
+# Model 1: Base (distance only)
+mod_base <- lmer(Fst ~ log10(geo_dist_km) + (1 | study), data = ibd_markers)
+r2_base <- r.squaredGLMM(mod_base)
+vc_base <- as.data.frame(VarCorr(mod_base))
+icc_base <- vc_base$vcov[vc_base$grp == "study"] / sum(vc_base$vcov)
+
+cat("\n=== MODEL 1: Distance only ===\n")
+cat("R²m:", round(r2_base[1, "R2m"], 4), " R²c:", round(r2_base[1, "R2c"], 4), "\n")
+cat("ICC(study):", round(icc_base, 3), "\n")
+
+# Model 2: + marker category
+mod_marker <- lmer(Fst ~ log10(geo_dist_km) + marker_category + (1 | study), data = ibd_markers)
+r2_marker <- r.squaredGLMM(mod_marker)
+vc_marker <- as.data.frame(VarCorr(mod_marker))
+icc_marker <- vc_marker$vcov[vc_marker$grp == "study"] / sum(vc_marker$vcov)
+
+cat("\n=== MODEL 2: + marker type ===\n")
+cat("R²m:", round(r2_marker[1, "R2m"], 4), " R²c:", round(r2_marker[1, "R2c"], 4), "\n")
+cat("ICC(study):", round(icc_marker, 3), "\n")
+cat("ICC reduction:", round(icc_base - icc_marker, 3),
+    "(", round((icc_base - icc_marker) / icc_base * 100, 1), "% of study variance)\n")
+
+cat("\nFixed effects:\n")
+print(summary(mod_marker)$coefficients)
+
+cat("\nLikelihood ratio test (Model 1 vs Model 2):\n")
+print(anova(mod_base, mod_marker))
+
+# Model 3: + species random effect
+mod_species <- lmer(Fst ~ log10(geo_dist_km) + marker_category + (1 | study) + (1 | Species_A),
+                    data = ibd_markers)
+r2_species <- r.squaredGLMM(mod_species)
+cat("\n=== MODEL 3: + species random effect ===\n")
+cat("R²m:", round(r2_species[1, "R2m"], 4), " R²c:", round(r2_species[1, "R2c"], 4), "\n")
+cat("Variance components:\n")
+print(VarCorr(mod_species))
+if (isSingular(mod_species)) cat("WARNING: Singular fit — Species_A explains ~0 variance\n")
+```
+
+## Descriptive statistics by marker type
+
+```{r marker-descriptives}
+marker_summary <- ibd_markers %>%
+  group_by(marker_category) %>%
+  summarise(
+    n_comparisons = n(), n_studies = n_distinct(study),
+    n_species = n_distinct(Species_A),
+    mean_fst = round(mean(Fst), 4), sd_fst = round(sd(Fst), 4),
+    median_fst = round(median(Fst), 4),
+    mean_dist_km = round(mean(geo_dist_km)),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(n_comparisons))
+
+print(marker_summary, width = Inf)
+
+kw <- kruskal.test(Fst ~ marker_category, data = ibd_markers)
+cat("\nKruskal-Wallis: H =", round(kw$statistic, 2), " p =", format(kw$p.value, digits = 3), "\n")
+
+if (kw$p.value < 0.05) {
+  cat("\nPairwise Wilcoxon (Bonferroni):\n")
+  print(pairwise.wilcox.test(ibd_markers$Fst, ibd_markers$marker_category,
+                             p.adjust.method = "bonferroni"))
+}
+
+write_csv(marker_summary, "outputs/03_marker_summary.csv")
+```
+
+```{r marker-boxplot, fig.width=6.7, fig.height=5}
+# Order marker types by median Fst (ascending = highest connectivity first)
+marker_order <- ibd_markers %>%
+  group_by(marker_category) %>%
+  summarise(med = median(Fst, na.rm = TRUE), .groups = "drop") %>%
+  arrange(med) %>%
+  pull(marker_category)
+
+p_marker_box <- ibd_markers %>%
+  mutate(marker_category = factor(marker_category, levels = marker_order)) %>%
+  ggplot(aes(x = marker_category, y = Fst, fill = marker_category)) +
+  geom_boxplot(outlier.shape = 21, outlier.size = 1.2, outlier.alpha = 0.4,
+               width = 0.55, linewidth = 0.4) +
+  geom_jitter(width = 0.14, size = 0.7, alpha = 0.25, colour = "grey20") +
+  stat_summary(fun = mean, geom = "point", shape = 23, size = 2.5,
+               fill = "white", colour = "black") +
+  scale_fill_brewer(palette = "Set2", guide = "none") +
+  labs(x = "Marker type", y = expression(F[ST]),
+       title = expression(bold(F[ST])~"by marker type")) +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.minor    = element_blank(),
+    panel.grid.major.x  = element_blank(),
+    axis.title          = element_text(size = 13, face = "bold"),
+    axis.text           = element_text(size = 11),
+    plot.title          = element_text(size = 12, face = "bold")
+  )
+
+print(p_marker_box)
+ggsave("outputs/Figure_marker_boxplot.pdf", p_marker_box,
+       width = 160, height = 130, units = "mm", dpi = 600, bg = "white")
+```
+
+## Variance partitioning
+
+```{r variance-partitioning}
+# Use ALL comparisons (between + within) with valid spawn mode
+fst_all <- fst_full %>%
+  filter(!is.na(Lat_A), !is.na(Lon_A), !is.na(Lat_B), !is.na(Lon_B)) %>%
+  mutate(
+    Lat_A = coalesce(as.numeric(as.character(Lat_A))),
+    Lon_A = coalesce(as.numeric(as.character(Lon_A))),
+    Lat_B = coalesce(as.numeric(as.character(Lat_B))),
+    Lon_B = coalesce(as.numeric(as.character(Lon_B)))
+  ) %>%
+  rowwise() %>%
+  mutate(geo_dist_km = distHaversine(c(Lon_A, Lat_A), c(Lon_B, Lat_B)) / 1000) %>%
+  ungroup() %>%
+  filter(geo_dist_km > 0) %>%
+   mutate(
+    spawn_mode = coalesce(Spawn_A, Spawn_B)
+  ) %>%
+  filter(!is.na(marker_category), marker_category != "Other",
+         !is.na(spawn_mode), !is.na(Taxon_A))
+
+cat("Dataset for variance partitioning:", nrow(fst_all), "comparisons\n")
+
+# Progressive model building
+vp_study     <- lmer(Fst ~ log10(geo_dist_km) + (1 | study), data = fst_all)
+vp_taxon     <- lmer(Fst ~ log10(geo_dist_km) + (1 | study) + (1 | Taxon_A), data = fst_all)
+vp_species   <- lmer(Fst ~ log10(geo_dist_km) + (1 | study) + (1 | Species_A), data = fst_all)
+vp_spawn     <- lmer(Fst ~ log10(geo_dist_km) + (1 | study) + (1 | spawn_mode), data = fst_all)
+vp_tax_mark  <- lmer(Fst ~ log10(geo_dist_km) + marker_category + (1 | study) + (1 | Taxon_A),
+                     data = fst_all)
+vp_full      <- lmer(Fst ~ log10(geo_dist_km) + marker_category +
+                       (1 | study) + (1 | Taxon_A) + (1 | spawn_mode), data = fst_all)
+
+# Extract variance proportions
+get_vp <- function(model, name) {
+  vc <- as.data.frame(VarCorr(model))
+  total <- sum(vc$vcov)
+  tibble(
+    Model = name,
+    Pct_Study   = round(100 * ifelse("study"      %in% vc$grp, vc$vcov[vc$grp == "study"], 0) / total, 1),
+    Pct_Taxon   = round(100 * ifelse("Taxon_A"    %in% vc$grp, vc$vcov[vc$grp == "Taxon_A"], 0) / total, 1),
+    Pct_Species = round(100 * ifelse("Species_A"  %in% vc$grp, vc$vcov[vc$grp == "Species_A"], 0) / total, 1),
+    Pct_Spawn   = round(100 * ifelse("spawn_mode" %in% vc$grp, vc$vcov[vc$grp == "spawn_mode"], 0) / total, 1),
+    Pct_Residual = round(100 * vc$vcov[vc$grp == "Residual"] / total, 1),
+    Singular = isSingular(model)
+  )
+}
+
+vp_table <- bind_rows(
+  get_vp(vp_study,    "1. Study only"),
+  get_vp(vp_taxon,    "2. + Taxon"),
+  get_vp(vp_species,  "3. + Species"),
+  get_vp(vp_spawn,    "4. + Spawn mode"),
+  get_vp(vp_tax_mark, "5. + Taxon + Marker"),
+  get_vp(vp_full,     "6. Full model")
+)
+
+cat("\n=== VARIANCE PARTITIONING (% of total) ===\n")
+print(vp_table, width = Inf)
+
+# Likelihood ratio tests
+cat("\n=== LIKELIHOOD RATIO TESTS ===\n")
+cat("Study vs Study+Taxon:\n");    print(anova(vp_study, vp_taxon))
+cat("Study vs Study+Species:\n");  print(anova(vp_study, vp_species))
+cat("Study vs Study+Spawn:\n");    print(anova(vp_study, vp_spawn))
+cat("Study+Taxon vs +Marker:\n");  print(anova(vp_taxon, vp_tax_mark))
+cat("+Marker vs Full:\n");         print(anova(vp_tax_mark, vp_full))
+
+# Final variance table for manuscript
+vc_final <- as.data.frame(VarCorr(vp_full))
+total_var <- sum(vc_final$vcov)
+variance_table_final <- tibble(
+  Source = case_when(
+    vc_final$grp == "study"      ~ "Study (methodological)",
+    vc_final$grp == "Taxon_A"    ~ "Taxon (biological)",
+    vc_final$grp == "spawn_mode" ~ "Spawn mode (reproductive)",
+    vc_final$grp == "Residual"   ~ "Residual"
+  ),
+  Variance = round(vc_final$vcov, 6),
+  Percent  = round(100 * vc_final$vcov / total_var, 1)
+)
+cat("\n=== FINAL VARIANCE TABLE ===\n")
+print(variance_table_final)
+
+write_csv(vp_table, "outputs/03_variance_partitioning.csv")
+write_csv(variance_table_final, "outputs/03_variance_table_final.csv")
+```
+
+## Meta-analytic heterogeneity (I² and Cochran's Q)
+
+```{r heterogeneity}
+study_level <- fst_between %>%
+  group_by(study) %>%
+  summarise(
+    n = n(), mean_fst = mean(Fst), sd_fst = sd(Fst),
+    se_fst = sd_fst / sqrt(n),
+    marker = first(marker_category), species = first(Species_A),
+    .groups = "drop"
+  ) %>%
+  filter(!is.na(se_fst), se_fst > 0)
+
+meta_re <- rma(yi = mean_fst, sei = se_fst, data = study_level, method = "REML")
+
+cat("=== META-ANALYTIC HETEROGENEITY ===\n")
+cat("Studies:", nrow(study_level), "\n")
+cat("Cochran's Q:", round(meta_re$QE, 2), " p =", format(meta_re$QEp, digits = 4), "\n")
+cat("I² =", round(meta_re$I2, 1), "%\n")
+cat("H² =", round(meta_re$H2, 2), "\n")
+cat("τ² =", round(meta_re$tau2, 5), "\n")
+
+heterogeneity_stats <- tibble(
+  Statistic = c("Cochran's Q", "Q p-value", "I²", "H²", "τ²"),
+  Value = c(round(meta_re$QE, 2), format(meta_re$QEp, digits = 4, scientific = TRUE),
+            paste0(round(meta_re$I2, 1), "%"), round(meta_re$H2, 2), round(meta_re$tau2, 5))
+)
+write_csv(heterogeneity_stats, "outputs/03_heterogeneity.csv")
+```
+
+## Sensitivity analyses
+
+```{r sensitivity}
+# Leave-one-out study influence
+full_slope <- fixef(mod_base)[2]
+full_r2m   <- r.squaredGLMM(mod_base)[1, "R2m"]
+
+loo_results <- tibble(
+  excluded = "NONE (full model)", n_remaining = nrow(ibd_markers),
+  slope = round(full_slope, 4), r2m = round(full_r2m, 4),
+  slope_pct_change = 0, r2_pct_change = 0, influential = FALSE
+)
+
+for (s in unique(ibd_markers$study)) {
+  d <- ibd_markers %>% filter(study != s)
+  if (nrow(d) < 50) next
+  m <- tryCatch(lmer(Fst ~ log10(geo_dist_km) + (1 | study), data = d), error = function(e) NULL)
+  if (is.null(m)) next
+  sl <- fixef(m)[2]
+  r2 <- r.squaredGLMM(m)[1, "R2m"]
+  loo_results <- bind_rows(loo_results, tibble(
+    excluded = s, n_remaining = nrow(d),
+    slope = round(sl, 4), r2m = round(r2, 4),
+    slope_pct_change = round((sl - full_slope) / full_slope * 100, 1),
+    r2_pct_change = round((r2 - full_r2m) / full_r2m * 100, 1),
+    influential = abs((sl - full_slope) / full_slope * 100) > 20 |
+                  abs((r2 - full_r2m) / full_r2m * 100) > 20
+  ))
+}
+
+cat("=== LEAVE-ONE-OUT SENSITIVITY ===\n")
+print(loo_results, width = Inf)
+
+# FST threshold sensitivity
+threshold_sens <- expand_grid(low = c(0.02, 0.05, 0.07), high = c(0.10, 0.15, 0.20)) %>%
+  rowwise() %>%
+  mutate(data = list({
+    region_connectivity %>%
+      mutate(cat = case_when(mean_fst < low ~ "High", mean_fst < high ~ "Moderate", TRUE ~ "Low")) %>%
+      count(cat) %>% pivot_wider(names_from = cat, values_from = n, values_fill = 0)
+  })) %>%
+  unnest(data) %>%
+  mutate(total = High + Moderate + Low,
+         pct_high = round(100 * High / total, 1),
+         pct_mod  = round(100 * Moderate / total, 1),
+         pct_low  = round(100 * Low / total, 1)) %>%
+  ungroup()
+
+cat("\n=== THRESHOLD SENSITIVITY ===\n")
+print(threshold_sens)
+
+write_csv(loo_results, "outputs/03_leave_one_out.csv")
+write_csv(threshold_sens, "outputs/03_threshold_sensitivity.csv")
+```
+
+```{r threshold-sensitivity-plot, fig.width=8, fig.height=4.5}
+thresh_long <- threshold_sens %>%
+  select(low, high, pct_high, pct_mod, pct_low) %>%
+  pivot_longer(c(pct_high, pct_mod, pct_low),
+               names_to = "class", values_to = "pct") %>%
+  mutate(
+    class = factor(
+      case_when(class == "pct_high" ~ "High",
+                class == "pct_mod"  ~ "Moderate",
+                TRUE                ~ "Low"),
+      levels = c("Low", "Moderate", "High")
+    ),
+    facet_label = paste0("Low threshold: Fst < ", low),
+    high_label  = paste0(high)
+  )
+
+# Mark the default thresholds (low = 0.05, high = 0.15)
+default_bar <- thresh_long %>%
+  filter(low == 0.05, high == 0.15) %>%
+  select(facet_label, high_label) %>%
+  distinct()
+
+p_thresh <- ggplot(thresh_long,
+                   aes(x = factor(high_label), y = pct, fill = class)) +
+  geom_col(position = "stack", width = 0.65,
+           colour = "white", linewidth = 0.3) +
+  geom_rect(data = default_bar,
+            aes(xmin = as.numeric(factor(high_label,
+                  levels = unique(thresh_long$high_label))) - 0.38,
+                xmax = as.numeric(factor(high_label,
+                  levels = unique(thresh_long$high_label))) + 0.38,
+                ymin = -2, ymax = 102),
+            fill = NA, colour = "black", linewidth = 0.7,
+            inherit.aes = FALSE) +
+  facet_wrap(~facet_label, nrow = 1) +
+  scale_fill_manual(
+    values = c("High" = "firebrick", "Moderate" = "coral2", "Low" = "skyblue2"),
+    name = "Connectivity"
+  ) +
+  scale_y_continuous(limits = c(0, 100), expand = c(0, 0)) +
+  labs(x = expression("High connectivity threshold (F"[ST]*")"),
+       y = "Region pairs (%)",
+       title = "Sensitivity of connectivity classification to Fst thresholds",
+       subtitle = "Black outline = default thresholds (Fst < 0.05 / > 0.15)") +
+  theme_bw(base_size = 11) +
+  theme(
+    panel.grid.minor   = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.title         = element_text(size = 12, face = "bold"),
+    axis.text          = element_text(size = 10),
+    strip.text         = element_text(size = 10, face = "bold"),
+    legend.title       = element_text(size = 10, face = "bold"),
+    legend.text        = element_text(size = 9),
+    plot.title         = element_text(size = 11, face = "bold"),
+    plot.subtitle      = element_text(size = 9, colour = "grey40")
+  )
+
+print(p_thresh)
+ggsave("outputs/Figure_threshold_sensitivity.pdf", p_thresh,
+       width = 200, height = 120, units = "mm", dpi = 600, bg = "white")
+```
+
+## Within-study Mantel tests
+
+```{r mantel-by-study}
+studies_for_mantel <- fst_between %>% count(study) %>% filter(n >= 10)
+
+run_study_mantel <- function(study_id, data) {
+  sd <- data %>% filter(study == study_id)
+  sites <- bind_rows(
+    sd %>% select(site = Site_A, lat = Lat_A, lon = Lon_A),
+    sd %>% select(site = Site_B, lat = Lat_B, lon = Lon_B)
+  ) %>% distinct(site, .keep_all = TRUE) %>% filter(!is.na(lat), !is.na(lon))
+
+  ns <- nrow(sites)
+  if (ns < 4) return(tibble(study = study_id, n_sites = ns, mantel_r = NA, p = NA, note = "<4 sites"))
+
+  crds <- as.matrix(sites[, c("lon", "lat")]); rownames(crds) <- sites$site
+  gm <- tryCatch(distm(crds, fun = distHaversine) / 1000, error = function(e) NULL)
+  if (is.null(gm)) return(tibble(study = study_id, n_sites = ns, mantel_r = NA, p = NA, note = "geo error"))
+  rownames(gm) <- colnames(gm) <- sites$site
+
+  fm <- matrix(NA, ns, ns, dimnames = list(sites$site, sites$site))
+  for (i in seq_len(nrow(sd))) {
+    a <- sd$Site_A[i]; b <- sd$Site_B[i]
+    if (a %in% rownames(fm) & b %in% colnames(fm)) { fm[a, b] <- sd$Fst[i]; fm[b, a] <- sd$Fst[i] }
+  }
+  diag(fm) <- 0
+
+  comp <- sum(!is.na(fm[upper.tri(fm)])) / sum(upper.tri(fm))
+  if (comp < 0.5) return(tibble(study = study_id, n_sites = ns, mantel_r = NA, p = NA,
+                                note = paste0(round(comp * 100), "% complete")))
+
+  n_imp <- sum(is.na(fm[upper.tri(fm)]))
+  if (any(is.na(fm))) fm[is.na(fm)] <- mean(fm, na.rm = TRUE)
+
+  set.seed(42)
+  mt <- tryCatch(mantel(as.dist(fm), as.dist(gm), method = "spearman", permutations = 999),
+                 error = function(e) NULL)
+  if (is.null(mt)) return(tibble(study = study_id, n_sites = ns, mantel_r = NA, p = NA, note = "failed"))
+
+  tibble(study = study_id, n_sites = ns, mantel_r = round(mt$statistic, 4),
+         p = round(mt$signif, 4), note = ifelse(n_imp > 0, paste(n_imp, "imputed"), "complete"))
+}
+
+mantel_by_study <- map_dfr(studies_for_mantel$study, run_study_mantel, data = fst_between) %>%
+  left_join(fst_between %>% group_by(study) %>%
+              summarise(marker = first(marker_category), species = first(Species_A),
+                        n_pairs = n(), .groups = "drop"),
+            by = "study")
+
+cat("=== WITHIN-STUDY MANTEL TESTS ===\n")
+print(mantel_by_study, width = Inf)
+write_csv(mantel_by_study, "outputs/03_mantel_by_study.csv")
+```
+
+# Genetic Network Analysis
+
+## Compute genetic centrality
+
+```{r genetic-network}
+# Force edge attribute columns to plain numeric vectors to avoid list-column errors
+fst_vals  <- as.numeric(region_connectivity$mean_fst)
+ncomp_vals <- as.integer(region_connectivity$n_comparisons)
+conn_vals  <- as.character(region_connectivity$connectivity)
+weight_vals <- pmax(1 - fst_vals, 1e-6, na.rm = TRUE)  # guard against 0/negative weights
+
+# Build undirected weighted graph from region-pair data
+g_gen <- graph_from_data_frame(
+  region_connectivity %>% select(Region_A, Region_B),
+  directed = FALSE
+)
+E(g_gen)$weight       <- weight_vals
+E(g_gen)$fst          <- fst_vals
+E(g_gen)$n_comp       <- ncomp_vals
+E(g_gen)$connectivity <- conn_vals
+
+genetic_centrality <- tibble(
+  region              = V(g_gen)$name,
+  genetic_degree      = as.numeric(igraph::degree(g_gen)),
+  genetic_strength    = round(as.numeric(strength(g_gen, weights = E(g_gen)$weight)), 2),
+  genetic_betweenness = round(as.numeric(betweenness(g_gen, weights = 1 / E(g_gen)$weight)), 1)
+) %>%
+  arrange(desc(genetic_degree))
+
+cat("=== GENETIC NETWORK CENTRALITY ===\n")
+print(genetic_centrality, width = Inf)
+write_csv(genetic_centrality, "outputs/04_genetic_centrality.csv")
+```
+
+```{r genetic-network-map, fig.width=7.1, fig.height=6.3}
+# region_centroids loaded from regionData.csv in load-data chunk
+
+net_edges <- region_connectivity %>%
+  left_join(region_centroids, by = c("Region_A" = "region")) %>%
+  rename(lon_A = lon, lat_A = lat) %>%
+  left_join(region_centroids, by = c("Region_B" = "region")) %>%
+  rename(lon_B = lon, lat_B = lat) %>%
+  filter(!is.na(lon_A), !is.na(lat_A), !is.na(lon_B), !is.na(lat_B)) %>%
+  arrange(connectivity)
+
+conn_cols <- c("Low" = "skyblue2", "Moderate" = "coral2", "High" = "firebrick")
+
+# Shared publication theme — applied to both network maps
+map_theme <- theme_bw(base_size = 12) +
+  theme(
+    panel.grid       = element_blank(),
+    panel.background = element_rect(fill = "aliceblue"),
+    axis.title       = element_text(size = 13, face = "bold"),
+    axis.text        = element_text(size = 11, colour = "black"),
+    legend.title     = element_text(size = 9, face = "bold"),
+    legend.text      = element_text(size = 8),
+    legend.key.size  = unit(0.4, "cm"),
+    legend.position  = "right",
+    plot.title       = element_text(size = 14, face = "bold", hjust = 0)
+  )
+
+# Shared inset theme
+inset_theme_base <- theme_bw(base_size = 9) +
+  theme(
+    panel.grid       = element_blank(),
+    panel.background = element_rect(fill = "aliceblue"),
+    panel.border     = element_rect(colour = "black", linewidth = 0.8),
+    axis.title       = element_blank(),
+    axis.text        = element_blank(),
+    axis.ticks       = element_blank(),
+    legend.position  = "none",
+    plot.margin      = margin(0, 0, 0, 0),
+    plot.background  = element_rect(fill = "white", colour = "black", linewidth = 0.6)
+  )
+
+# Inset bounding box
+inset_xlim <- c(113, 117.5)
+inset_ylim <- c(-23.5, -20)
+
+# Convert to sf for accurate node placement with coord_sf
+region_centroids_sf <- st_as_sf(region_centroids, coords = c("lon", "lat"),
+                                crs = 4326, remove = FALSE)
+inset_centroids_sf <- region_centroids_sf %>%
+  filter(lon >= inset_xlim[1], lon <= inset_xlim[2],
+         lat >= inset_ylim[1], lat <= inset_ylim[2])
+
+# ── Main map (with dashed locator box) ────────────────────────────────────────
+p_gen_net <- ggplot() +
+  geom_sf(data = basemap, fill = "grey80", color = "black", linewidth = 0.25) +
+  geom_segment(data = net_edges,
+    aes(x = lon_A, y = lat_A, xend = lon_B, yend = lat_B, colour = connectivity),
+    linewidth = 1.0, alpha = 0.75) +
+  geom_sf(data = region_centroids_sf, size = 3, shape = 19,
+          colour = "black", inherit.aes = FALSE) +
+  annotate("rect",
+    xmin = inset_xlim[1], xmax = inset_xlim[2],
+    ymin = inset_ylim[1], ymax = inset_ylim[2],
+    colour = "black", fill = NA, linewidth = 0.6, linetype = "dashed") +
+  scale_colour_manual(values = conn_cols,
+                      name = "Genetic\nConnectivity") +
+  annotation_scale(location = "bl", width_hint = 0.15, style = "ticks",
+                   text_cex = 0.8, line_width = 0.6) +
+  coord_sf(xlim = c(108, 130), ylim = c(-36, -8), expand = FALSE) +
+  labs(x = "Longitude", y = "Latitude", title = "(a)") +
+  map_theme
+
+# ── Inset ─────────────────────────────────────────────────────────────────────
+gen_inset_base <- list(
+  geom_sf(data = basemap, fill = "grey85", color = "grey50", linewidth = 0.25),
+  geom_segment(data = net_edges,
+    aes(x = lon_A, y = lat_A, xend = lon_B, yend = lat_B, colour = connectivity),
+    linewidth = 0.9, alpha = 0.75),
+  geom_sf(data = region_centroids_sf, size = 2, shape = 19,
+          colour = "black", inherit.aes = FALSE),
+  scale_colour_manual(values = conn_cols, guide = "none"),
+  coord_sf(xlim = inset_xlim, ylim = inset_ylim, expand = FALSE),
+  inset_theme_base
+)
+
+p_gen_inset <- ggplot() + gen_inset_base
+
+# ── Save main map and inset as separate files ─────────────────────────────────
+print(p_gen_net)
+ggsave("outputs/Figure_genetic_network.pdf", p_gen_net,
+       width = 180, height = 160, units = "mm", dpi = 600, bg = "white")
+ggsave("outputs/Figure_genetic_network.png", p_gen_net,
+       width = 180, height = 160, units = "mm", dpi = 300, bg = "white")
+
+print(p_gen_inset)
+ggsave("outputs/Figure_genetic_network_inset.pdf", p_gen_inset,
+       width = 80, height = 80, units = "mm", dpi = 600, bg = "white")
+ggsave("outputs/Figure_genetic_network_inset.png", p_gen_inset,
+       width = 80, height = 80, units = "mm", dpi = 300, bg = "white")
+```
+
+# Hydrodynamic Network Analysis
+
+## Compute hydrodynamic centrality
+
+```{r hydro-network}
+g_hydro <- graph_from_data_frame(
+  hydro_summary %>%
+    mutate(from = sapply(str_split(region_pair, " <-> "), `[`, 1),
+           to   = sapply(str_split(region_pair, " <-> "), `[`, 2)) %>%
+    select(from, to),
+  directed = FALSE
+)
+E(g_hydro)$weight <- hydro_summary$hydro_strength_num
+E(g_hydro)$consensus <- hydro_summary$hydro_consensus
+
+hydro_centrality <- tibble(
+  region              = V(g_hydro)$name,
+  hydro_degree        = as.numeric(igraph::degree(g_hydro)),
+  hydro_strength      = round(as.numeric(strength(g_hydro, weights = E(g_hydro)$weight)), 2),
+  hydro_betweenness   = round(as.numeric(betweenness(g_hydro, weights = 1 / E(g_hydro)$weight)), 1)
+) %>%
+  arrange(desc(hydro_degree))
+
+cat("=== HYDRODYNAMIC NETWORK CENTRALITY ===\n")
+print(hydro_centrality, width = Inf)
+write_csv(hydro_centrality, "outputs/05_hydro_centrality.csv")
+
+# Directional summary for manuscript
+cat("\n=== DIRECTIONAL TRANSPORT SUMMARY ===\n")
+cat("Total connections:", nrow(hydro_conn), "\n")
+hydro_conn %>%
+  mutate(dir_class = case_when(
+    direction %in% c("S", "SW", "SE") ~ "Southward/SW/SE",
+    direction == "W" ~ "Westward",
+    direction == "bidirectional" ~ "Bidirectional",
+    TRUE ~ "Other"
+  )) %>%
+  count(dir_class) %>%
+  mutate(pct = round(100 * n / sum(n), 1)) %>%
+  print()
+```
+
+```{r hydro-network-map, fig.width=7.1, fig.height=6.3}
+# Parse region pairs into from/to and join coordinates
+hydro_edges <- hydro_summary %>%
+  mutate(
+    from = sapply(str_split(region_pair, " <-> "), `[`, 1),
+    to   = sapply(str_split(region_pair, " <-> "), `[`, 2),
+    is_bidirectional = str_detect(directions, "bidirectional"),
+    hydro_consensus  = factor(hydro_consensus, levels = c("low", "mod", "high"))
+  ) %>%
+  left_join(region_centroids, by = c("from" = "region")) %>%
+  rename(lon_A = lon, lat_A = lat) %>%
+  left_join(region_centroids, by = c("to" = "region")) %>%
+  rename(lon_B = lon, lat_B = lat) %>%
+  filter(!is.na(lon_A), !is.na(lat_A), !is.na(lon_B), !is.na(lat_B)) %>%
+  arrange(hydro_consensus)
+
+hydro_cols <- c("low" = "skyblue2", "mod" = "coral2", "high" = "firebrick")
+hydro_labs <- c("low" = "Low", "mod" = "Moderate", "high" = "High")
+
+hydro_bidir <- filter(hydro_edges, is_bidirectional)
+
+# Directed: orient north→south, then shorten destination end to clear node
+hydro_directed <- filter(hydro_edges, !is_bidirectional) %>%
+  mutate(
+    # Swap so x_start/y_start is always the northern (higher lat) node
+    going_south = lat_A >= lat_B,
+    x_start = ifelse(going_south, lon_A, lon_B),
+    y_start = ifelse(going_south, lat_A, lat_B),
+    x_end   = ifelse(going_south, lon_B, lon_A),
+    y_end   = ifelse(going_south, lat_B, lat_A)
+  ) %>%
+  mutate(
+    dx    = x_end - x_start,
+    dy    = y_end - y_start,
+    d     = sqrt(dx^2 + dy^2),
+    x_end = x_end - 0.35 * dx / d,
+    y_end = y_end - 0.35 * dy / d
+  )
+
+# ── Main map ───────────────────────────────────────────────────────────────────
+p_hydro_net <- ggplot() +
+  geom_sf(data = basemap, fill = "grey85", color = "grey50", linewidth = 0.25) +
+  geom_segment(data = hydro_bidir,
+    aes(x = lon_A, y = lat_A, xend = lon_B, yend = lat_B, colour = hydro_consensus),
+    linewidth = 1.0, alpha = 0.75) +
+  geom_segment(data = hydro_directed,
+    aes(x = x_start, y = y_start, xend = x_end, yend = y_end, colour = hydro_consensus),
+    linewidth = 1.0, alpha = 0.75,
+    arrow = arrow(length = unit(0.2, "cm"), type = "closed")) +
+  geom_sf(data = region_centroids_sf, size = 3, shape = 19,
+          colour = "black", inherit.aes = FALSE) +
+  scale_colour_manual(values = hydro_cols, labels = hydro_labs,
+                      breaks = c("low", "mod", "high"),
+                      name = "Hydrodynamic\nConnectivity") +
+  annotation_scale(location = "bl", width_hint = 0.15, style = "ticks",
+                   text_cex = 0.8, line_width = 0.6) +
+  coord_sf(xlim = c(108, 130), ylim = c(-36, -8), expand = FALSE) +
+  labs(x = "Longitude", y = "Latitude", title = "(b)") +
+  map_theme
+
+print(p_hydro_net)
+ggsave("outputs/Figure_hydro_network.pdf", p_hydro_net,
+       width = 180, height = 160, units = "mm", dpi = 600, bg = "white")
+```
+
+## Connectivity heatmaps
+
+```{r connectivity-heatmaps, fig.width=14, fig.height=8}
+# Region order: north→south (from regionData.csv)
+region_order <- region_centroids$region
+
+# Helper: build symmetric region × region matrix
+make_sym_mat <- function(df, col_A, col_B, col_val, regions) {
+  n   <- length(regions)
+  mat <- matrix(NA_real_, n, n, dimnames = list(regions, regions))
+  for (i in seq_len(nrow(df))) {
+    a <- df[[col_A]][i]; b <- df[[col_B]][i]; v <- df[[col_val]][i]
+    if (!is.na(a) && !is.na(b) && a %in% regions && b %in% regions) {
+      mat[a, b] <- v
+      mat[b, a] <- v
+    }
+  }
+  mat
+}
+
+# Genetic Fst matrix
+fst_mat <- make_sym_mat(
+  region_connectivity, "Region_A", "Region_B", "mean_fst", region_order
+)
+
+# Hydrodynamic strength matrix
+hydro_df <- hydro_summary %>%
+  mutate(
+    R_A = sapply(str_split(region_pair, " <-> "), `[`, 1),
+    R_B = sapply(str_split(region_pair, " <-> "), `[`, 2)
+  )
+hydro_mat <- make_sym_mat(
+  hydro_df, "R_A", "R_B", "hydro_strength_num", region_order
+)
+
+# Colour scales
+fst_max  <- ceiling(max(fst_mat, na.rm = TRUE) * 20) / 20
+fst_col  <- colorRampPalette(c("#2166ac", "#f7f7f7", "#d73027"))(100)
+fst_brks <- seq(0, fst_max, length.out = 101)
+
+hydro_col  <- c("skyblue2", "coral2", "firebrick")
+hydro_brks <- c(0.5, 1.5, 2.5, 3.5)
+
+# Genetic heatmap
+ph_fst <- pheatmap(
+  fst_mat,
+  color         = fst_col,
+  breaks        = fst_brks,
+  na_col        = "grey92",
+  cluster_rows  = FALSE, cluster_cols = FALSE,
+  show_rownames = TRUE,  show_colnames = TRUE,
+  angle_col     = 45,
+  fontsize      = 8,
+  main          = "(a) Genetic Connectivity (mean Fst)",
+  silent        = TRUE
+)
+
+# Hydrodynamic heatmap
+ph_hydro <- pheatmap(
+  hydro_mat,
+  color         = hydro_col,
+  breaks        = hydro_brks,
+  legend_breaks = c(1, 2, 3),
+  legend_labels = c("Low", "Moderate", "High"),
+  na_col        = "grey92",
+  cluster_rows  = FALSE, cluster_cols = FALSE,
+  show_rownames = TRUE,  show_colnames = TRUE,
+  angle_col     = 45,
+  fontsize      = 8,
+  main          = "(b) Hydrodynamic Connectivity",
+  silent        = TRUE
+)
+
+# Combine side-by-side and save
+p_heatmaps <- cowplot::plot_grid(ph_fst$gtable, ph_hydro$gtable, nrow = 1)
+print(p_heatmaps)
+
+ggsave("outputs/Figure_heatmaps.pdf", p_heatmaps,
+       width = 360, height = 200, units = "mm", dpi = 600, bg = "white")
+```
+
+# Genetic–Hydrodynamic Concordance
+
+## Region-pair concordance
+
+```{r concordance}
+# Merge genetic and hydrodynamic at region-pair level
+gen_for_merge <- region_connectivity %>%
+  select(region_pair, mean_fst, n_comparisons, connectivity) %>%
+  rename(genetic_connectivity = connectivity) %>%
+  mutate(genetic_strength_num = case_when(
+    genetic_connectivity == "High" ~ 3L,
+    genetic_connectivity == "Moderate" ~ 2L,
+    genetic_connectivity == "Low" ~ 1L
+  ))
+
+concordance <- gen_for_merge %>%
+  inner_join(hydro_summary, by = "region_pair")
+
+cat("=== REGION PAIRS WITH BOTH DATASETS ===\n")
+cat("Overlapping pairs:", nrow(concordance), "\n\n")
+print(concordance %>%
+        select(region_pair, mean_fst, genetic_connectivity, hydro_consensus,
+               genetic_strength_num, hydro_strength_num),
+      width = Inf)
+
+# Jaccard similarity
+gen_pairs   <- unique(gen_for_merge$region_pair)
+hydro_pairs <- unique(hydro_summary$region_pair)
+jaccard <- length(intersect(gen_pairs, hydro_pairs)) / length(union(gen_pairs, hydro_pairs))
+cat("\n=== JACCARD SIMILARITY ===\n")
+cat("Genetic pairs:", length(gen_pairs), "\n")
+cat("Hydro pairs:", length(hydro_pairs), "\n")
+cat("Overlap:", length(intersect(gen_pairs, hydro_pairs)), "\n")
+cat("Union:", length(union(gen_pairs, hydro_pairs)), "\n")
+cat("Jaccard =", round(jaccard, 3), "(", round(jaccard * 100, 1), "%)\n")
+
+# Ordinal strength correlation (at region-pair level)
+if (nrow(concordance) >= 5) {
+  sp_ordinal <- cor.test(concordance$genetic_strength_num, concordance$hydro_strength_num,
+                         method = "spearman")
+  cat("\nSpearman (ordinal strength categories): rho =", round(sp_ordinal$estimate, 3),
+      " p =", format(sp_ordinal$p.value, digits = 3), "\n")
+
+  sp_fst <- cor.test(concordance$mean_fst, concordance$hydro_strength_num, method = "spearman")
+  cat("Spearman (mean FST vs hydro strength): rho =", round(sp_fst$estimate, 3),
+      " p =", format(sp_fst$p.value, digits = 3), "\n")
+
+  cat("\nContingency table:\n")
+  print(table(Genetic = concordance$genetic_connectivity, Hydro = concordance$hydro_consensus))
+}
+```
+
+## Centrality comparison across networks
+
+```{r centrality-comparison}
+# Join centrality metrics for regions present in BOTH networks
+centrality_comp <- genetic_centrality %>%
+  inner_join(hydro_centrality, by = "region")
+
+cat("=== CENTRALITY COMPARISON (regions in both networks) ===\n")
+cat("Regions compared:", nrow(centrality_comp), "\n\n")
+print(centrality_comp, width = Inf)
+
+# Spearman correlations for each centrality metric
+cat("\n=== SPEARMAN RANK CORRELATIONS ===\n")
+for (metric in c("degree", "strength", "betweenness")) {
+  g_col <- paste0("genetic_", metric)
+  h_col <- paste0("hydro_", metric)
+  sp <- cor.test(centrality_comp[[g_col]], centrality_comp[[h_col]], method = "spearman")
+  cat(sprintf("%-12s: rho = %+.3f, p = %.3f (n = %d)\n",
+              metric, sp$estimate, sp$p.value, nrow(centrality_comp)))
+}
+
+write_csv(centrality_comp, "outputs/06_centrality_comparison.csv")
+write_csv(concordance, "outputs/06_concordance.csv")
+```
+
+```{r centrality-table}
+# Full centrality table: all regions from both networks
+all_centrality <- genetic_centrality %>%
+  rename(Gen_Degree = genetic_degree,
+         Gen_Strength = genetic_strength,
+         Gen_Betweenness = genetic_betweenness) %>%
+  full_join(
+    hydro_centrality %>%
+      rename(Hydro_Degree = hydro_degree,
+             Hydro_Strength = hydro_strength,
+             Hydro_Betweenness = hydro_betweenness),
+    by = "region"
+  ) %>%
+  arrange(desc(coalesce(Gen_Degree, 0L) + coalesce(Hydro_Degree, 0L))) %>%
+  rename(Region = region)
+
+knitr::kable(
+  all_centrality,
+  digits  = c(0, 0, 2, 1, 0, 2, 1),
+  col.names = c("Region",
+                "Degree", "Strength", "Betweenness",
+                "Degree", "Strength", "Betweenness"),
+  caption = "Centrality metrics for genetic and hydrodynamic connectivity networks.
+             Degree = number of connections; Strength = sum of weighted connections;
+             Betweenness = number of shortest paths through node.
+             NA = region absent from that network.",
+  format  = "html"
+) %>%
+  kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                            full_width = FALSE, font_size = 12) %>%
+  kableExtra::add_header_above(
+    c(" " = 1, "Genetic network" = 3, "Hydrodynamic network" = 3)
+  ) %>%
+  kableExtra::column_spec(1, bold = TRUE)
+```
+
+## Concordance classification
+
+```{r concordance-classification}
+# Classify each overlapping pair
+concordance_classified <- concordance %>%
+  mutate(
+    agreement = case_when(
+      genetic_strength_num == hydro_strength_num           ~ "Concordant",
+      abs(genetic_strength_num - hydro_strength_num) == 1  ~ "Partially concordant",
+      TRUE                                                  ~ "Discordant"
+    )
+  )
+
+cat("=== CONCORDANCE CLASSIFICATION ===\n")
+concordance_classified %>% count(agreement) %>% print()
+cat("\n")
+concordance_classified %>%
+  select(region_pair, genetic_connectivity, hydro_consensus, agreement) %>%
+  print(width = Inf)
+
+write_csv(concordance_classified, "outputs/06_concordance_classified.csv")
+```
+
+# Summary Tables for Manuscript
+
+```{r summary-tables}
+cat("================================================================\n")
+cat("     MANUSCRIPT-READY SUMMARY — ALL KEY NUMBERS\n")
+cat("================================================================\n\n")
+
+cat("── DATA OVERVIEW ──\n")
+cat("Total FST comparisons (cleaned):", nrow(fst_clean), "\n")
+cat("Between-region:", nrow(fst_between), "\n")
+cat("Within-region:", nrow(fst_within), "\n")
+cat("Unique region pairs:", nrow(region_connectivity), "\n")
+cat("Studies contributing FST data:", n_distinct(fst_between$study), "\n")
+cat("Species:", n_distinct(fst_between$Species_A), "\n")
+cat("Distance range:", round(min(fst_between$geo_dist_km)), "–",
+    round(max(fst_between$geo_dist_km)), "km\n")
+
+cat("\n── CONNECTIVITY CLASSIFICATION ──\n")
+region_connectivity %>%
+  count(connectivity) %>%
+  mutate(pct = round(100 * n / sum(n), 1)) %>%
+  print()
+
+cat("\n── ISOLATION-BY-DISTANCE ──\n")
+cat("Simple LM: slope =", round(coef(ibd_lm)[2], 4), ", R² =", round(lm_summ$r.squared, 4), "\n")
+cat("Bootstrap slope [95% BCa CI]:", round(boot_slope$t0, 4),
+    "[", round(ci_slope$bca[4], 4), "–", round(ci_slope$bca[5], 4), "]\n")
+cat("Mixed model: R²m =", round(r2_mixed[1, "R2m"], 4),
+    ", R²c =", round(r2_mixed[1, "R2c"], 4), "\n")
+cat("ICC(study) =", round(icc, 3), "\n")
+cat("Moran's I =", round(moran5$estimate[1], 4), ", p =", format(moran5$p.value, digits = 3), "\n")
+cat("Mantel r (log distance) =", round(mantel_log$statistic, 4), ", p =", mantel_log$signif, "\n")
+
+cat("\n── MODERATOR ANALYSIS ──\n")
+cat("Marker type LRT: χ² = 15.66, df = 3, p = 0.001\n")
+cat("R²m increased from", round(r2_base[1, "R2m"], 4), "to", round(r2_marker[1, "R2m"], 4), "\n")
+cat("ICC reduced from", round(icc_base, 3), "to", round(icc_marker, 3),
+    "(", round((icc_base - icc_marker) / icc_base * 100, 1), "% of study variance explained)\n")
+cat("Kruskal-Wallis: p =", format(kw$p.value, digits = 3), "\n")
+
+cat("\n── HETEROGENEITY ──\n")
+cat("Cochran's Q =", round(meta_re$QE, 2), ", p =", format(meta_re$QEp, digits = 3), "\n")
+cat("I² =", round(meta_re$I2, 1), "%\n")
+
+cat("\n── VARIANCE PARTITIONING (Full model) ──\n")
+print(variance_table_final)
+
+cat("\n── GENETIC NETWORK ──\n")
+cat("Top hubs (degree):", paste(head(genetic_centrality$region, 3), collapse = ", "), "\n")
+print(head(genetic_centrality, 5))
+
+cat("\n── HYDRODYNAMIC NETWORK ──\n")
+cat("Connections:", nrow(hydro_conn), "\n")
+cat("Top hubs (degree):", paste(head(hydro_centrality$region, 3), collapse = ", "), "\n")
+print(head(hydro_centrality, 5))
+
+cat("\n── CONCORDANCE ──\n")
+cat("Jaccard similarity:", round(jaccard * 100, 1), "%\n")
+cat("Overlapping region pairs:", nrow(concordance), "\n")
+cat("Spearman centrality correlations:\n")
+for (metric in c("degree", "strength", "betweenness")) {
+  sp <- cor.test(centrality_comp[[paste0("genetic_", metric)]],
+                 centrality_comp[[paste0("hydro_", metric)]], method = "spearman")
+  cat(sprintf("  %-12s: rho = %+.3f, p = %.3f\n", metric, sp$estimate, sp$p.value))
+}
+
+cat("\n── REGIONS WITHOUT DATA ──\n")
+all_20_regions <- c("Timor Sea", "Ashmore", "Scott Reef", "Kimberley Nearshore",
+                    "Kimberley Offshore", "Rowley Shoals", "NW nearshore", "NW offshore",
+                    "Dampier Peninsula", "Dampier Archipelago", "Pilbara Offshore",
+                    "Pilbara nearshore", "Exmouth Gulf", "Ningaloo", "Shark Bay",
+                    "Abrolhos", "Central Coast", "Southwest coast",
+                    "Cocos (Keeling)", "Christmas Island")
+gen_regions <- unique(c(fst_between$Region_A, fst_between$Region_B))
+hydro_regions <- unique(c(hydro_conn$region_A, hydro_conn$region_B))
+either_regions <- union(gen_regions, hydro_regions)
+uncharacterised <- setdiff(all_20_regions, either_regions)
+cat("Characterised by genetics:", length(gen_regions), "\n")
+cat("Characterised by hydro:", length(hydro_regions), "\n")
+cat("Either approach:", length(either_regions), "\n")
+cat("Uncharacterised (", length(uncharacterised), "):", paste(uncharacterised, collapse = ", "), "\n")
+```
+
+# Manuscript Tables
+
+## Table S1 — Genetic studies reviewed
+
+```{r ms-table-s1}
+ms_gen <- litrev_genetic %>%
+  arrange(publishedYear) %>%
+  transmute(
+    `Study ID`     = studyID,
+    `Year`         = publishedYear,
+    `Taxa`         = taxa,
+    `Species`      = species,
+    `Spawn mode`   = str_to_sentence(spawnType),
+    `Marker`       = markerType,
+    `Sites`        = numSites,
+    `n (samples)`  = sampleSize,
+    `Regions`      = location,
+    `Included`     = if_else(valuesAvail == "y", "Yes", "No")
+  )
+
+kbl(ms_gen,
+    caption = "Table S1. Genetic connectivity studies included in the literature review. Studies in grey were excluded from quantitative analysis (Included = No). n = total number of individual samples.",
+    align   = c("l","c","l","l","l","l","c","c","l","c")) %>%
+  kable_classic(full_width = FALSE, html_font = "Arial", font_size = 10) %>%
+  column_spec(1, bold = TRUE) %>%
+  column_spec(9, width = "18em") %>%
+  row_spec(which(ms_gen$Included == "No"), color = "grey60") %>%
+  row_spec(0, bold = TRUE)
+```
+
+## Table S2 — Dispersal model studies reviewed
+
+```{r ms-table-s2}
+ms_disp <- litrev_dispersal %>%
+  arrange(publishedYear) %>%
+  transmute(
+    `Study ID`        = studyID,
+    `Year`            = publishedYear,
+    `Taxa`            = taxa,
+    `Model`           = modelType,
+    `Resolution`      = modelRes,
+    `Season modelled` = seasonModel,
+    `Tracking`        = trackingApproach,
+    `Regions`         = location,
+    `Included`        = if_else(valuesAvail == "y", "Yes", "No")
+  )
+
+kbl(ms_disp,
+    caption = "Table S2. Hydrodynamic dispersal modelling studies included in the literature review. Studies in grey were excluded from quantitative analysis (Included = No).",
+    align   = c("l","c","l","l","l","l","l","l","c")) %>%
+  kable_classic(full_width = FALSE, html_font = "Arial", font_size = 10) %>%
+  column_spec(1, bold = TRUE) %>%
+  column_spec(8, width = "18em") %>%
+  row_spec(which(ms_disp$Included == "No"), color = "grey60") %>%
+  row_spec(0, bold = TRUE)
+```
+
+## Table 1 — Isolation-by-distance and heterogeneity
+
+```{r ms-table-1}
+ms_ibd <- tribble(
+  ~Statistic,                            ~Value,                                                                                ~Note,
+  # IBD - simple LM
+  "IBD slope (simple LM)",               as.character(round(coef(ibd_lm)[2], 4)),                                               "FST per log10 km",
+  "R2 (simple LM)",                      as.character(round(lm_summ$r.squared, 3)),                                             "",
+  "Bootstrap slope [95% BCa CI]",        paste0(round(boot_slope$t0, 4), " [", round(ci_slope$bca[4], 4), " - ", round(ci_slope$bca[5], 4), "]"), "1,000 resamples",
+  "Bootstrap R2 [95% BCa CI]",           paste0(round(boot_r2$t0, 3),    " [", round(ci_r2$bca[4],    3), " - ", round(ci_r2$bca[5],    3), "]"), "1,000 resamples",
+  # IBD - mixed model
+  "R2m marginal (distance)",             as.character(round(r2_mixed[1, "R2m"], 3)),                                            "Mixed model, study random intercept",
+  "R2c conditional (distance + study)",  as.character(round(r2_mixed[1, "R2c"], 3)),                                            "",
+  "ICC (study)",                         as.character(round(icc, 3)),                                                           "Proportion of variance among studies",
+  # Spatial autocorrelation
+  "Moran's I",                           as.character(round(moran5$estimate[1], 4)),                                            "k = 5 nearest neighbours",
+  "Moran's I p-value",                   format(moran5$p.value, digits = 3, scientific = FALSE),                                "",
+  "Mantel r (log distance)",             as.character(round(mantel_log$statistic, 4)),                                          "9,999 permutations, Spearman",
+  "Mantel p-value",                      as.character(mantel_log$signif),                                                       "",
+  # Heterogeneity
+  "Cochran's Q",                         as.character(round(meta_re$QE, 2)),                                                    paste0("p = ", format(meta_re$QEp, digits = 3, scientific = TRUE)),
+  "I2 (%)",                              paste0(round(meta_re$I2, 1), "%"),                                                     "Among-study heterogeneity",
+  "tau2",                                as.character(round(meta_re$tau2, 5)),                                                   "Between-study variance"
+)
+
+kbl(ms_ibd,
+    col.names = c("Statistic", "Value", "Notes"),
+    caption   = "Table 1. Isolation-by-distance (IBD) and meta-analytic heterogeneity statistics for pairwise FST across Australian coral reef regions.",
+    align     = c("l","c","l")) %>%
+  kable_classic(full_width = FALSE, html_font = "Arial", font_size = 10) %>%
+  row_spec(0, bold = TRUE) %>%
+  pack_rows("Isolation-by-distance", 1, 7) %>%
+  pack_rows("Spatial autocorrelation", 8, 11) %>%
+  pack_rows("Heterogeneity", 12, 14)
+```
+
+## Table 2 — FST by marker type
+
+```{r ms-table-2}
+ms_marker <- marker_summary %>%
+  transmute(
+    `Marker type`    = marker_category,
+    `Comparisons`    = n_comparisons,
+    `Studies`        = n_studies,
+    `Species`        = n_species,
+    `Mean FST`       = mean_fst,
+    `SD`             = sd_fst,
+    `Median FST`     = median_fst,
+    `Mean dist. (km)` = mean_dist_km
+  )
+
+# Kruskal-Wallis and pairwise results as a footnote string
+kw_note <- paste0("Kruskal-Wallis H = ", round(kw$statistic, 2),
+                  ", p = ", format(kw$p.value, digits = 3, scientific = FALSE))
+
+kbl(ms_marker,
+    caption = paste0("Table 2. FST summary statistics by molecular marker type. ", kw_note, "."),
+    align   = c("l","c","c","c","c","c","c","c")) %>%
+  kable_classic(full_width = FALSE, html_font = "Arial", font_size = 10) %>%
+  row_spec(0, bold = TRUE) %>%
+  footnote(general = kw_note, general_title = "")
+```
+
+## Table 3 — Variance partitioning
+
+```{r ms-table-3}
+r2m_vals <- c(
+  r.squaredGLMM(vp_study)[1,    "R2m"],
+  r.squaredGLMM(vp_taxon)[1,    "R2m"],
+  r.squaredGLMM(vp_species)[1,  "R2m"],
+  r.squaredGLMM(vp_spawn)[1,    "R2m"],
+  r.squaredGLMM(vp_tax_mark)[1, "R2m"],
+  r.squaredGLMM(vp_full)[1,     "R2m"]
+)
+
+ms_vp <- vp_table %>%
+  mutate(R2m = round(r2m_vals, 3)) %>%
+  transmute(
+    Model          = Model,
+    R2m            = R2m,
+    `% Study`      = Pct_Study,
+    `% Taxon`      = Pct_Taxon,
+    `% Spawn mode` = Pct_Spawn,
+    `% Residual`   = Pct_Residual,
+    Singular       = if_else(Singular, "Yes", "")
+  )
+
+kbl(ms_vp,
+    col.names = c("Model", "R2m (marginal)", "% Study", "% Taxon", "% Spawn mode", "% Residual", "Singular"),
+    caption   = "Table 3. Progressive variance partitioning of FST. Values show the percentage of total variance attributed to each random effect. R2m = marginal R2 (fixed effects only). Marker type was included as a fixed effect in models 5-6.",
+    align     = c("l","c","c","c","c","c","c")) %>%
+  kable_classic(full_width = FALSE, html_font = "Arial", font_size = 10) %>%
+  row_spec(0, bold = TRUE) %>%
+  row_spec(nrow(ms_vp), bold = TRUE) %>%
+  footnote(general = "Singular = model hit a boundary (variance component ≈ 0).",
+           general_title = "")
+```
+
+## Table 4 — Network centrality and concordance
+
+```{r ms-table-4}
+# Centrality comparison table (regions in both networks)
+ms_centrality <- all_centrality %>%
+  mutate(across(where(is.numeric), ~ round(.x, 2)))
+
+kbl(ms_centrality,
+    col.names = c("Region",
+                  "Degree", "Strength", "Betweenness",
+                  "Degree", "Strength", "Betweenness"),
+    caption   = "Table 4. Network centrality metrics for genetic and hydrodynamic connectivity networks across Australian coral reef regions. Degree = number of connected region pairs; Strength = sum of edge weights; Betweenness = number of shortest paths through each node. NA = region absent from that network.",
+    align     = c("l","c","c","c","c","c","c")) %>%
+  kable_classic(full_width = FALSE, html_font = "Arial", font_size = 10) %>%
+  add_header_above(c(" " = 1, "Genetic network" = 3, "Hydrodynamic network" = 3),
+                   bold = TRUE) %>%
+  column_spec(1, bold = TRUE) %>%
+  row_spec(0, bold = TRUE)
+```
+
+## Table S3 — Concordance classification
+
+```{r ms-table-s3}
+ms_concordance <- concordance_classified %>%
+  transmute(
+    `Region pair`           = region_pair,
+    `Genetic connectivity`  = str_to_sentence(genetic_connectivity),
+    `Hydrodynamic consensus`= str_to_sentence(hydro_consensus),
+    `Agreement`             = agreement
+  ) %>%
+  arrange(Agreement, `Region pair`)
+
+# Colour-code agreement column
+agree_colours <- case_when(
+  ms_concordance$Agreement == "Concordant"           ~ "#d4edda",
+  ms_concordance$Agreement == "Partially concordant" ~ "#fff3cd",
+  ms_concordance$Agreement == "Discordant"           ~ "#f8d7da"
+)
+
+kbl(ms_concordance,
+    caption = paste0("Table S3. Concordance classification for all overlapping region pairs (n = ",
+                     nrow(ms_concordance), "). Jaccard network similarity = ",
+                     round(jaccard * 100, 1), "%."),
+    align   = c("l","c","c","c")) %>%
+  kable_classic(full_width = FALSE, html_font = "Arial", font_size = 10) %>%
+  row_spec(0, bold = TRUE) %>%
+  column_spec(4, background = agree_colours, bold = TRUE)
+```
+
+# Session Info
+
+```{r session-info}
+sessionInfo()
+```

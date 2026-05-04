@@ -1,0 +1,7 @@
+region_pair,n,mean_fst,mean_resid
+Ashmore <-> Rowley Shoals,3,0.019,-0.357
+Ashmore <-> Ningaloo,3,0.057,-0.343
+Ningaloo <-> Rowley Shoals,9,0.052,-0.332
+Kimberley Nearshore <-> Ningaloo,6,0.096,-0.3
+Kimberley Nearshore <-> Rowley Shoals,6,0.073,-0.292
+Ashmore <-> Kimberley Nearshore,2,0.068,-0.29

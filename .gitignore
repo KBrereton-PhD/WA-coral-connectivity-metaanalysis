@@ -1,0 +1,34 @@
+# R workspace files
+.RData
+.Rhistory
+.RDataTmp
+*.Rproj.user/
+
+# Rendered output (reproducible from source)
+FullPipeline.html
+FullPipeline_files/
+FullPipeline_test_files/
+
+# Personal / draft files
+conservation.docx
+neeed to do.pdf
+
+# Claude Code tooling
+.claude/
+
+# R package management (keep renv.lock, exclude library)
+renv/library/
+renv/staging/
+renv/.cache/
+
+# Stale outputs
+outputs/oldOutputs/
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Excel lock files
+~$*.xlsx
+~$*.csv

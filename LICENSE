@@ -1,0 +1,15 @@
+This repository uses a dual license:
+
+CODE LICENSE (FullPipeline.Rmd)
+================================
+The analysis code is licensed under the MIT License.
+See LICENSE-CODE for the full license text.
+
+DATA LICENSE (data/, outputs/, map-assets/)
+============================================
+The data files, derived outputs, and figures are licensed under the
+Creative Commons Attribution 4.0 International License (CC BY 4.0).
+See LICENSE-DATA for the full license text.
+
+Copyright (c) 2026 Kira Brereton
+University of Western Australia

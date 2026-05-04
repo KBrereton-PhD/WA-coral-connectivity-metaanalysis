@@ -1,0 +1,30 @@
+﻿studyType,location,studyID,publishedYear,yearModelled,species,taxa,spawnType,seasonModel,numSites,sampleSize,trackingApproach,modelRes,modelType,markerType,valuesAvail,excluReas
+dispersal,Dampier Archipelago; Pilbara Offshore; Pilbara nearshore; Ningaloo; Rowley Shoals; Ashmore; Scott Reef,ca08,2008,1994-1999,na,na,na,Autumn,7,na,3D; Lagrangian; passive,10km; 5km; 1km,MECO,na,y,na
+dispersal,Pilbara nearshore; Pilbara Offshore; Dampier Archipelago,ra14,2014,1996; 2001; 2002,na,na,na,Autumn,na,na,3D; Lagrangian; passive,1km,OILMAP; GCOM3D,na,n,no quant
+dispersal,Abrolhos,th15,2015,2009-2012,na,na,na,Autumn,15,na,4D; Lagrangian; passive,na,HYCOM,na,n,no quant
+dispersal,Kimberley Offshore; Kimberley Nearshore; Pilbara nearshore; Pilbara Offshore; Abrolhos; Shark Bay; Ningaloo; Exmouth Gulf; Dampier Archipelago; Scott Reef; Rowley Shoals; Ashmore; Dampier Peninsula; NW nearshore; NW offshore,KN15,2015,2009-2012,na,na,na,all,15,na,4D; Lagrangian; passive,9km,HYCOM; Conn4D,na,y,na
+dispersal,Ningaloo; Exmouth Gulf; Pilbara Offshore; Pilbara nearshore; Dampier Archipelago,fe16,2016,2004-2009,Acropora millepora,Acropora,broadcast,Autumn,3430,na,3D; Lagrangian; passive,1km,ROMS,na,y,na
+dispersal,Abrolhos; Dampier Archipelago; Ningaloo; Shark Bay; Pilbara nearshore; Pilbara Offshore,ma16,2016,2010;2011,na,na,na,Autumn,5,na,2D; Lagrangian; passive,2km; 4km,WASA/OzROMS,na,y,na
+dispersal,Pilbara Offshore; Ningaloo; Shark Bay; Dampier Archipelago; Kimberley nearshore; Exmouth Gulf; Pilbara nearshore,ev19,2019,2004-2009,na,na,na,Autumn,15,na,3D; Lagrangian; passive,1km,ROMS,na,n,no quant
+dispersal,Ningaloo; Exmouth Gulf; Pilbara Offshore; Pilbara nearshore; Dampier Archipelago,ba20,2020,2004-2009,na,na,na,Autumn,3430,na,3D; Lagrangian; passive,1km,ROMS,na,n,no quant
+dispersal,Dampier Archipelago,th21,2021,2015; 2016; 2017,Acropora millepora,Acropora,broadcast,na,15,na,3D; Lagrangian; species specific,1km,ROMS,na,n,single region
+dispersal,Rowley Shoals,gr22,2022,1980-2020,Acropora spp.,Acropora,broadcast,Autumn; Spring,na,na,2D; Lagrangian; species specific,500m,Delft3D,na,n,single region
+dispersal,Scott Reef,gr24,2024,2000-2020,Acropora spp.,Acropora,broadcast,Autumn,59,na,2D; Lagrangian; passive,120m,OceanParcels,na,n,single region
+genetic,Abrolhos; Central Coast; Southwest coast,st84,1984,na,Pocillopora damicornis,Pocillopora,brooding,na,25,,na,na,na,Allozyme electrophoresis,n,Fst not available
+genetic,Scott Reef,un07,2007,2004,Seriatopora hystrix,Seriatopora,brooding,na,6,287,na,na,na,microsatellites,y,na
+genetic,Ningaloo; Exmouth Gulf; Houtman Abrolhos,wh06,2006,1991; 1992; 1993,Pocillopora damicornis,Pocillopora,brooding,na,10,644,na,na,na,Allozyme electrophoresis,y,na
+genetic,Scott Reef; Rowley Shoals; Dampier Archipelago; Ningaloo,un09,2009,na,Acropora tenuis,Acropora,broadcast,na,26,1156,na,na,na,microsatellites,y,na
+genetic,Scott Reef; Rowley Shoals; Kimberley Offshore,un09b,2009,2004; 2005; 2006,Acropora tenuis; Seriatopora hystrix,Acropora; Seriatopora,broadcast; brooding,na,16,576; 476,na,na,na,microsatellites,y,na
+genetic,Scott Reef,vo11,2011,2003; 2009,Seriatopora hystrix,Seriatopora,brooding,na,9,336,na,na,na,microsatellites; mtDNA,y,na
+genetic,Kimberley nearshore; Abrolhos,th14a,2014,2010; 2012,Acropora spp.,Acropora,broadcast,na,8,70,na,na,na,NGS,n,Fst not available
+genetic,Ningaloo,th14b,2014,2012,Pocillopora damicornis,Pocillopora,brooding,na,10,303,na,na,na,microsatellites,n,Fst not available
+genetic,Abrolhos,th15,2015,2013; 2014,Acropora spicifera,Acropora,broadcast,na,15,395,na,na,na,microsatellites,y,na
+genetic,Ashmore; Ningaloo; Rowley Shoals; Dampier Archipelago; Pilbara Offshore; Kimberley Nearshore; Scott Reef,ros16,2016,na,Acropora tenuis,Acropora,broadcast,na,7,na,na,na,na,mtDNA; nuclear introns; microsatellites,y,na
+genetic,Ningaloo; Abrolhos; Southwest coast; Shark Bay; Pilbara Offshore,th17,2017,na,Pocillopora damicornis,Pocillopora,brooding,na,6,294,na,na,na,microsatellites; SNPs,n,Fst not available
+genetic,Pilbara Offshore; Ningaloo; Shark Bay; Dampier Archipelago; Kimberley nearshore; Exmouth Gulf; Pilbara nearshore,ev19,2019,na,Cyphastrea microphthalma,Cyphastrea,broadcast,na,18,451,na,na,na,microsatellites,y,na
+genetic,Ashmore; Ningaloo; Rowley Shoals; Dampier Archipelago; Pilbara Offshore; Scott Reef; Timor Sea,ro20,2020,na,Acropora tenuis,Acropora,broadcast,na,10,381,na,na,na,microsatellites,y,na
+genetic,Rowley Shoals,th20,2020,na,Acropora digitifera; Isopora brueggemanni,Acropora; Isopora,broadcast; brooding,na,9,242; 218,na,na,na,SNPs,y,na
+genetic,NW nearshore; Dampier Archipelago; Pilbara Offshore; Pilbara nearshore; Exmouth Gulf; Shark Bay; Southwest coast; Kimberley Nearshore,ev21,2021,na,Turbinaria spp.,Turbinaria,broadcast,na,10,225,na,na,na,mtDNA; SNPs,y,na
+genetic,Ningaloo; Ashmore; Rowley Shoals; Kimberley Nearshore,ad21,2022,na,Acropora digitifera,Acropora,broadcast,na,31,704,na,na,na,SNPs,y,na
+genetic,Rowley Shoals; Scott Reef,th22,2022,2017; 2018; 2019,Acropora tenuis,Acropora,broadcast,na,5,85,na,na,na,SNPs; microsatellites,n,Fst not available
+genetic,Ningaloo; Exmouth Gulf; Pilbara Offshore,du26,2026,na,Acropora tenuis,Acropora,broadcast,na,14,158,na,na,na,SNPs,y,na

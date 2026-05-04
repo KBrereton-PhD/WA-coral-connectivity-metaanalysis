@@ -1,0 +1,30 @@
+region_pair,n_hydro_studies,hydro_consensus,hydro_strength_num,directions
+Abrolhos <-> Dampier Archipelago,2,low,1,SW
+Abrolhos <-> NW nearshore,1,low,1,SW
+Abrolhos <-> Ningaloo,2,low,2,S
+Abrolhos <-> Pilbara Offshore,2,low,1,SW; S
+Abrolhos <-> Pilbara nearshore,1,low,1,SW
+Abrolhos <-> Rowley Shoals,1,low,1,NA
+Abrolhos <-> Shark Bay,1,low,1,S
+Ashmore <-> Kimberley nearshore,1,mod,2,NA
+Ashmore <-> Ningaloo,1,low,1,NA
+Ashmore <-> Rowley Shoals,1,low,1,NA
+Ashmore <-> Scott Reef,2,low,2,NA
+Dampier Archipelago <-> NW nearshore,1,mod,2,NA
+Dampier Archipelago <-> Ningaloo,1,low,1,SW
+Dampier Archipelago <-> Pilbara Offshore,3,mod,3,SW; NA
+Dampier Archipelago <-> Pilbara nearshore,1,high,3,NA
+Dampier Archipelago <-> Shark Bay,1,low,1,NA
+Kimberley nearshore <-> Rowley Shoals,1,low,1,NA
+Kimberley nearshore <-> Scott Reef,1,mod,2,NA
+NW nearshore <-> Pilbara Offshore,1,mod,2,NA
+NW nearshore <-> Shark Bay,1,low,1,NA
+Ningaloo <-> NW nearshore,1,low,1,NA
+Ningaloo <-> Pilbara Offshore,3,high,3,SW; N; NA
+Ningaloo <-> Pilbara nearshore,1,mod,2,SW
+Ningaloo <-> Rowley Shoals,1,low,1,NA
+Ningaloo <-> Shark Bay,1,high,3,S
+Pilbara Offshore <-> Rowley Shoals,1,low,1,NA
+Pilbara Offshore <-> Shark Bay,1,low,1,SW
+Pilbara nearshore <-> Pilbara Offshore,1,high,3,bidirectional
+Rowley Shoals <-> Scott Reef,1,low,1,NA

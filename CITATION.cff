@@ -1,0 +1,46 @@
+cff-version: 1.2.0
+message: "If you use this code or data, please cite it as below."
+type: software
+title: "Genetic and hydrodynamic connectivity in Australian coral reef species: a meta-analysis"
+abstract: >
+  R code and data for a meta-analysis of pairwise FST-based genetic connectivity
+  and Lagrangian hydrodynamic connectivity across Australian coral reef species.
+  Covers isolation-by-distance analysis, marker-type effects on FST, variance
+  partitioning, genetic and hydrodynamic network analysis, and concordance
+  assessment between the two connectivity frameworks across 20 biogeographic
+  regions of Australia.
+authors:
+  - family-names: Brereton
+    given-names: Kira
+    affiliation: "University of Western Australia"
+    email: kirabrereton290@gmail.com
+    orcid: "https://orcid.org/YOUR-ORCID-HERE"
+repository-code: "https://github.com/kirabrereton/coral-reef-connectivity-metaanalysis"
+url: "https://github.com/kirabrereton/coral-reef-connectivity-metaanalysis"
+doi: "10.5281/zenodo.XXXXXXX"
+version: "1.0.0"
+date-released: "2026-05-04"
+license:
+  - MIT
+  - CC-BY-4.0
+keywords:
+  - coral reef
+  - genetic connectivity
+  - FST
+  - hydrodynamic connectivity
+  - meta-analysis
+  - isolation by distance
+  - network analysis
+  - Australia
+  - marine population genetics
+  - R
+references:
+  - type: thesis
+    title: "YOUR THESIS TITLE HERE"
+    authors:
+      - family-names: Brereton
+        given-names: Kira
+    institution:
+      name: "University of Western Australia"
+    year: 2026
+    thesis-type: "PhD thesis"

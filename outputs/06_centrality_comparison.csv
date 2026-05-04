@@ -1,0 +1,11 @@
+region,genetic_degree,genetic_strength,genetic_betweenness,hydro_degree,hydro_strength,hydro_betweenness
+Dampier Archipelago,12,10.52,3,6,11,0.5
+Pilbara Offshore,12,10.72,13,7,14,12
+Ningaloo,11,9.48,21,8,14,23
+Pilbara nearshore,8,7.39,0,4,9,0
+Shark Bay,8,6.94,0,5,7,0
+Ashmore,7,5.33,0,4,6,13
+Rowley Shoals,7,5.89,0,6,6,1
+NW nearshore,6,5.54,0,5,7,0
+Scott Reef,6,5.44,0,3,5,0
+Abrolhos,1,0.64,0,7,8,0

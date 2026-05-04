@@ -1,0 +1,5 @@
+marker_category,n_comparisons,n_studies,n_species,mean_fst,sd_fst,median_fst,mean_dist_km
+Microsatellite,427,3,2,0.0706,0.0544,0.06,653
+SNP,101,2,2,0.2211,0.3109,0.052,582
+Mixed,42,2,2,0.1285,0.1342,0.0654,598
+Allozyme,1,1,1,0.36,NA,0.36,544
