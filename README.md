@@ -1,6 +1,6 @@
 # Genetic and Hydrodynamic Connectivity in Australian Coral Reef Species: A Meta-Analysis
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.XXXXXXX.svg)](https://doi.org/10.5281/zenodo.XXXXXXX)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20031763.svg)](https://doi.org/10.5281/zenodo.20031763)
 [![License: MIT](https://img.shields.io/badge/Code-MIT-blue.svg)](LICENSE-CODE)
 [![License: CC BY 4.0](https://img.shields.io/badge/Data-CC%20BY%204.0-lightgrey.svg)](LICENSE-DATA)
 [![R version](https://img.shields.io/badge/R-%3E%3D4.3.0-blue)](https://www.r-project.org/)
