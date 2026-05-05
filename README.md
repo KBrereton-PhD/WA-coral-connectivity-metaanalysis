@@ -64,7 +64,7 @@ The pipeline uses `rnaturalearth::ne_countries()` to download the Australia/Indo
 
 ### Cite the thesis chapter
 
-Brereton, K. (2026). *Genetic and hydrodynamic connectivity in Australian coral reef species: a meta-analysis*. PhD Thesis, University of Western Australia.
+Brereton, K. (2026). *Multiscale coral connectivity across Western Australia: evidence from genetic structure and biophysical modelling*. PhD Thesis, University of Western Australia.
 
 ### Cite this code and data archive
 

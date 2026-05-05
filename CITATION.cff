@@ -14,7 +14,7 @@ authors:
     given-names: Kira
     affiliation: "University of Western Australia"
     email: kirabrereton290@gmail.com
-    orcid: "https://orcid.org/YOUR-ORCID-HERE"
+    orcid: "https://orcid.org/0009-0000-8728-5587"
 repository-code: "https://github.com/kirabrereton/coral-reef-connectivity-metaanalysis"
 url: "https://github.com/kirabrereton/coral-reef-connectivity-metaanalysis"
 doi: "10.5281/zenodo.XXXXXXX"
@@ -36,7 +36,7 @@ keywords:
   - R
 references:
   - type: thesis
-    title: "YOUR THESIS TITLE HERE"
+    title: "Multiscale coral connectivity across Western Australia: evidence from genetic structure and biophysical modelling"
     authors:
       - family-names: Brereton
         given-names: Kira
