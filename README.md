@@ -20,7 +20,7 @@ This repository contains the complete analysis pipeline for a meta-analysis of p
 | `data/README_data.md` | Data dictionary: column definitions for every input file |
 | `outputs/` | Generated files: cleaned data CSVs, analysis result CSVs, all manuscript figures |
 | `map-assets/` | Static basemap images used as spatial reference |
-| `references/` | Supporting reference data (supplementary table from Duffy et al. 2026) |
+| `references/` | Supporting reference data |
 | `coral-reef-meta.Rproj` | RStudio project file — open this to set the working directory automatically |
 
 ## Data Availability
@@ -72,7 +72,7 @@ See [CITATION.cff](CITATION.cff) or use GitHub's "Cite this repository" button (
 
 ```
 Brereton, K. (2026). Genetic and hydrodynamic connectivity in Australian coral reef species:
-a meta-analysis (v1.0.0). Zenodo. https://doi.org/10.5281/zenodo.XXXXXXX
+a meta-analysis (v1.0.0). Zenodo. (https://doi.org/10.5281/zenodo.20031763)
 ```
 
 ## License
@@ -84,5 +84,5 @@ See [LICENSE](LICENSE) for the full dual-license statement.
 
 ## Contact
 
-Kira Brereton — kirabrereton290@gmail.com
-School of Biological Sciences, University of Western Australia
+Kira Brereton — kira.brereton@research.uwa.edu.au
+School of Earth and Oceans, University of Western Australia
