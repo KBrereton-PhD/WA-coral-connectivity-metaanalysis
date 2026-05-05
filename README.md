@@ -5,7 +5,7 @@
 [![License: CC BY 4.0](https://img.shields.io/badge/Data-CC%20BY%204.0-lightgrey.svg)](LICENSE-DATA)
 [![R version](https://img.shields.io/badge/R-%3E%3D4.3.0-blue)](https://www.r-project.org/)
 
-> **Note:** Replace `XXXXXXX` in the Zenodo badge URL with your actual DOI once the first release is published on Zenodo. Update the Dryad DOI in the Data Availability section similarly.
+
 
 ## Overview
 
@@ -27,7 +27,7 @@ This repository contains the complete analysis pipeline for a meta-analysis of p
 
 Input data are openly available on Dryad: **[doi:10.5061/dryad.XXXXXXX](https://doi.org/10.5061/dryad.XXXXXXX)**
 
-The full repository — including analysis code, derived outputs, and all manuscript figures — is archived on Zenodo: **[doi:10.5281/zenodo.XXXXXXX](https://doi.org/10.5281/zenodo.XXXXXXX)**
+The full repository — including analysis code, derived outputs, and all manuscript figures — is archived on Zenodo: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20031763.svg)](https://doi.org/10.5281/zenodo.20031763)
 
 ## Reproducing the Analysis
 
